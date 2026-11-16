@@ -1,0 +1,193 @@
+# SillyTavern browser-cache layer.
+# Listens only on 127.0.0.1:8001 and reverse-proxies to ST on :8000.
+# Cloudflare Access sits in front, so the edge will not cache; this layer
+# only adds Cache-Control for the browser / PWA.
+server {
+    listen 127.0.0.1:8001;
+    server_name tavern.vickytavel.online;
+
+    client_max_body_size 500m;
+
+    access_log /var/log/nginx/tavern-cache-access.log;
+    error_log  /var/log/nginx/tavern-cache-error.log;
+
+    # Control page: proxy + cache refresh. Never cache.
+    location ^~ /_ctl {
+        include snippets/tavern-ctl-proxy.conf;
+        client_max_body_size 1m;
+    }
+
+    # Resource library. Never cache.
+    location ^~ /_lib {
+        include snippets/tavern-lib-proxy.conf;
+        client_max_body_size 20m;
+    }
+
+    # ------------------------------------------------------------------
+    # Never apply long-lived cache: HTML entry, APIs, user data.
+    # Prefer missing a cache opportunity over caching the wrong thing.
+    # ------------------------------------------------------------------
+    location = / {
+        include snippets/tavern-proxy.conf;
+    }
+
+    location = /index.html {
+        include snippets/tavern-proxy.conf;
+    }
+
+    location = /login {
+        include snippets/tavern-proxy.conf;
+    }
+
+    location = /login.html {
+        include snippets/tavern-proxy.conf;
+    }
+
+    location = /csrf-token {
+        include snippets/tavern-proxy.conf;
+    }
+
+    location = /version {
+        include snippets/tavern-proxy.conf;
+    }
+
+    location = /manifest.json {
+        include snippets/tavern-proxy.conf;
+    }
+
+    # User-defined CSS (data/_css/user.css), must reflect edits immediately.
+    location = /css/user.css {
+        include snippets/tavern-proxy.conf;
+    }
+
+    location ^~ /api/ {
+        include snippets/tavern-proxy.conf;
+    }
+
+    # /thumbnail?type=... is user-generated and changes when images change.
+    location ^~ /thumbnail {
+        include snippets/tavern-proxy.conf;
+    }
+
+    location ^~ /characters/ {
+        include snippets/tavern-proxy.conf;
+    }
+
+    location ^~ "/User Avatars/" {
+        include snippets/tavern-proxy.conf;
+    }
+
+    location ^~ /User%20Avatars/ {
+        include snippets/tavern-proxy.conf;
+    }
+
+    location ^~ /backgrounds/ {
+        include snippets/tavern-proxy.conf;
+    }
+
+    location ^~ /user/ {
+        include snippets/tavern-proxy.conf;
+    }
+
+    location ^~ /assets/ {
+        include snippets/tavern-proxy.conf;
+    }
+
+    location ^~ /proxy/ {
+        include snippets/tavern-proxy.conf;
+    }
+
+    location ^~ /callback {
+        include snippets/tavern-proxy.conf;
+    }
+
+    # ------------------------------------------------------------------
+    # Cacheable frontend static assets (GET). Hide origin max-age=0 and
+    # let the browser keep them for 1 day, revalidate in the background
+    # for up to 7 days.
+    # Includes /scripts/extensions/third-party/ (user-installed
+    # extensions, often very large; they change only on install/update).
+    # ------------------------------------------------------------------
+    location = /lib.js {
+        include snippets/tavern-proxy.conf;
+        proxy_hide_header Cache-Control;
+        add_header Cache-Control "public, max-age=86400, stale-while-revalidate=604800" always;
+    }
+
+    location = /script.js {
+        include snippets/tavern-proxy.conf;
+        proxy_hide_header Cache-Control;
+        add_header Cache-Control "public, max-age=86400, stale-while-revalidate=604800" always;
+    }
+
+    location = /style.css {
+        include snippets/tavern-proxy.conf;
+        proxy_hide_header Cache-Control;
+        add_header Cache-Control "public, max-age=86400, stale-while-revalidate=604800" always;
+    }
+
+    location = /favicon.ico {
+        include snippets/tavern-proxy.conf;
+        proxy_hide_header Cache-Control;
+        add_header Cache-Control "public, max-age=86400, stale-while-revalidate=604800" always;
+    }
+
+    location = /st.ico {
+        include snippets/tavern-proxy.conf;
+        proxy_hide_header Cache-Control;
+        add_header Cache-Control "public, max-age=86400, stale-while-revalidate=604800" always;
+    }
+
+    location = /st-launcher.ico {
+        include snippets/tavern-proxy.conf;
+        proxy_hide_header Cache-Control;
+        add_header Cache-Control "public, max-age=86400, stale-while-revalidate=604800" always;
+    }
+
+    location ^~ /scripts/ {
+        include snippets/tavern-proxy.conf;
+        proxy_hide_header Cache-Control;
+        add_header Cache-Control "public, max-age=86400, stale-while-revalidate=604800" always;
+    }
+
+    location ^~ /css/ {
+        include snippets/tavern-proxy.conf;
+        proxy_hide_header Cache-Control;
+        add_header Cache-Control "public, max-age=86400, stale-while-revalidate=604800" always;
+    }
+
+    location ^~ /img/ {
+        include snippets/tavern-proxy.conf;
+        proxy_hide_header Cache-Control;
+        add_header Cache-Control "public, max-age=86400, stale-while-revalidate=604800" always;
+    }
+
+    location ^~ /webfonts/ {
+        include snippets/tavern-proxy.conf;
+        proxy_hide_header Cache-Control;
+        add_header Cache-Control "public, max-age=86400, stale-while-revalidate=604800" always;
+    }
+
+    location ^~ /locales/ {
+        include snippets/tavern-proxy.conf;
+        proxy_hide_header Cache-Control;
+        add_header Cache-Control "public, max-age=86400, stale-while-revalidate=604800" always;
+    }
+
+    location ^~ /lib/ {
+        include snippets/tavern-proxy.conf;
+        proxy_hide_header Cache-Control;
+        add_header Cache-Control "public, max-age=86400, stale-while-revalidate=604800" always;
+    }
+
+    location ^~ /sounds/ {
+        include snippets/tavern-proxy.conf;
+        proxy_hide_header Cache-Control;
+        add_header Cache-Control "public, max-age=86400, stale-while-revalidate=604800" always;
+    }
+
+    # Everything else (deprecated API aliases, unknown paths): no long cache.
+    location / {
+        include snippets/tavern-proxy.conf;
+    }
+}

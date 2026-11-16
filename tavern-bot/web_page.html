@@ -1,0 +1,618 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+  <meta name="referrer" content="same-origin">
+  <meta name="robots" content="noindex,nofollow">
+  <title>酒馆资源库</title>
+  <style>
+    :root {
+      color-scheme: dark;
+      --bg: #12140f;
+      --card: #1c2a1a;
+      --text: #e8eee4;
+      --muted: #a8b5a4;
+      --line: #2d3d2a;
+      --btn: #3d6b3a;
+      --btn-text: #f4faf1;
+      --btn-off: #6b3a3a;
+      --btn-neutral: #2a3828;
+      --warn: #e6c07b;
+      --ok: #9ece88;
+      --err: #e07a7a;
+      --chip: #243322;
+      --chip-on: #3d6b3a;
+    }
+    * { box-sizing: border-box; }
+    body {
+      margin: 0;
+      font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", "PingFang SC", "Noto Sans SC", sans-serif;
+      background: var(--bg);
+      color: var(--text);
+      line-height: 1.55;
+      min-height: 100vh;
+      padding: 20px 16px 64px;
+    }
+    main { max-width: 1080px; margin: 0 auto; }
+    header { margin-bottom: 18px; }
+    h1 { font-size: 1.4rem; font-weight: 650; margin: 0 0 8px; }
+    .lead { color: var(--muted); margin: 0 0 14px; font-size: 0.95rem; }
+    .nav { display: flex; flex-wrap: wrap; gap: 8px; margin-bottom: 16px; }
+    .nav a {
+      color: var(--text); text-decoration: none; background: var(--btn-neutral);
+      border: 1px solid var(--line); border-radius: 12px; padding: 8px 12px;
+      font-size: 0.92rem; font-weight: 600;
+    }
+    .search, select.filter, textarea.field, input.field {
+      width: 100%; border: 1px solid var(--line); background: var(--card);
+      color: var(--text); border-radius: 12px; padding: 12px 14px; font-size: 1rem;
+      outline: none; font-family: inherit;
+    }
+    .search { margin-bottom: 12px; }
+    .search:focus, select.filter:focus, textarea.field:focus, input.field:focus { border-color: var(--btn); }
+    .filters { display: grid; grid-template-columns: repeat(auto-fit, minmax(160px, 1fr)); gap: 8px; margin-bottom: 12px; }
+    .chips {
+      display: flex; flex-wrap: nowrap; gap: 8px; overflow-x: auto;
+      -webkit-overflow-scrolling: touch; padding-bottom: 10px; margin-bottom: 8px;
+    }
+    .chips button, .mini-chip {
+      appearance: none; flex: 0 0 auto; border: 1px solid var(--line);
+      background: var(--chip); color: var(--text); border-radius: 999px;
+      padding: 7px 14px; font-size: 0.92rem; font-weight: 600; cursor: pointer;
+    }
+    .chips button.on { background: var(--chip-on); border-color: var(--chip-on); color: var(--btn-text); }
+    .mini-chip { padding: 3px 10px; font-size: 0.78rem; margin: 2px 4px 2px 0; display: inline-block; cursor: default; }
+    .mini-chip.pending { color: var(--warn); }
+    .grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(160px, 1fr)); gap: 12px; }
+    .card {
+      background: var(--card); border: 1px solid var(--line); border-radius: 16px;
+      overflow: hidden; cursor: pointer; display: flex; flex-direction: column;
+      text-align: left; color: inherit; padding: 0; font: inherit; width: 100%;
+    }
+    .thumb {
+      aspect-ratio: 2 / 3; background: #162016; display: flex;
+      align-items: center; justify-content: center; color: var(--muted); font-size: 0.85rem; overflow: hidden;
+    }
+    .thumb img { width: 100%; height: 100%; object-fit: cover; display: block; }
+    .thumb.icon { aspect-ratio: 16 / 9; font-size: 1.4rem; }
+    .meta { padding: 10px 12px 12px; }
+    .meta h3 {
+      font-size: 0.98rem; margin: 0 0 4px; font-weight: 650;
+      display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; overflow: hidden;
+    }
+    .tag, .date, .note, .hint, .sub, label.lab { color: var(--muted); font-size: 0.8rem; margin: 0; }
+    .tag { color: var(--ok); }
+    .note { margin-top: 4px; display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; overflow: hidden; }
+    .empty, .status {
+      background: var(--card); border: 1px solid var(--line); border-radius: 16px;
+      padding: 22px 16px; color: var(--muted);
+    }
+    .backdrop {
+      display: none; position: fixed; inset: 0; background: rgba(0,0,0,0.55);
+      z-index: 20; align-items: flex-end; justify-content: center;
+    }
+    .backdrop.show { display: flex; }
+    .panel {
+      background: var(--bg); border: 1px solid var(--line); border-bottom: 0;
+      border-radius: 20px 20px 0 0; width: min(720px, 100%); max-height: 92vh;
+      overflow: auto; padding: 18px 16px 28px;
+    }
+    .panel .hero {
+      width: 120px; height: 180px; border-radius: 12px; overflow: hidden;
+      background: #162016; margin: 0 0 12px; flex: 0 0 auto;
+    }
+    .panel .hero img { width: 100%; height: 100%; object-fit: cover; }
+    .panel h2 { margin: 0 0 6px; font-size: 1.2rem; }
+    .row { margin: 0 0 8px; color: var(--muted); font-size: 0.92rem; word-break: break-word; }
+    .row a { color: var(--ok); }
+    .btns { display: flex; flex-direction: column; gap: 10px; margin-top: 16px; }
+    button.action, a.action {
+      appearance: none; display: block; width: 100%; border: 0; border-radius: 12px;
+      padding: 13px 14px; font-size: 1rem; font-weight: 600; text-align: center;
+      text-decoration: none; cursor: pointer; color: var(--btn-text); background: var(--btn);
+    }
+    button.action.again { background: var(--btn-neutral); color: var(--text); border: 1px solid var(--line); }
+    button.action.ghost, a.action.ghost {
+      background: var(--btn-neutral); color: var(--text); border: 1px solid var(--line);
+    }
+    button.action:disabled { opacity: 0.6; cursor: wait; }
+    .msg { display: none; margin: 10px 0 0; font-size: 0.92rem; }
+    .msg.show { display: block; }
+    .msg.ok { color: var(--ok); }
+    .msg.err { color: var(--err); }
+    .msg.warn { color: var(--warn); }
+    .close-x {
+      float: right; appearance: none; border: 0; background: transparent;
+      color: var(--muted); font-size: 1.4rem; line-height: 1; cursor: pointer; padding: 0 4px;
+    }
+    .edit-grid { display: grid; gap: 8px; margin-top: 12px; }
+    label.lab { display: block; margin-bottom: 4px; }
+    @media (min-width: 720px) {
+      .backdrop { align-items: center; }
+      .panel { border-radius: 20px; border-bottom: 1px solid var(--line); }
+    }
+  </style>
+</head>
+<body>
+  <main>
+    <header>
+      <h1>酒馆资源库</h1>
+      <p class="lead">日常打标签在 Discord 里点选即可。这里用来浏览、筛选、改元数据和导入酒馆。生图只保留条目和跳转，不存原图。</p>
+      <div class="nav">
+        <a href="/_ctl/">控制页</a>
+        <a href="/">返回酒馆</a>
+      </div>
+      <input class="search" id="q" type="search" placeholder="搜索标题、作者、标签、主题、简介或片段" enterkeyhint="search" autocomplete="off">
+      <div class="chips" id="chips"></div>
+      <div class="filters">
+        <select class="filter" id="review"><option value="">全部状态</option><option value="pending">待确认</option><option value="confirmed">已确认</option></select>
+        <select class="filter" id="theme"><option value="">全部主题</option></select>
+        <select class="filter" id="bucket"><option value="">全部标签类别</option></select>
+        <input class="search" id="tag" type="search" placeholder="按标签名筛选" style="margin:0" autocomplete="off">
+      </div>
+    </header>
+    <div id="list"></div>
+  </main>
+  <div class="backdrop" id="backdrop" hidden>
+    <div class="panel" id="panel" role="dialog" aria-modal="true"></div>
+  </div>
+  <script>
+    const TYPES = [
+      ["all", "全部"],
+      ["character", "角色卡"],
+      ["world", "世界书"],
+      ["preset", "预设"],
+      ["persona", "面具"],
+      ["style", "文风"],
+      ["beautify", "美化"],
+      ["imagegen", "生图"],
+      ["other", "其他"],
+    ];
+    const TYPE_LABEL = Object.fromEntries(TYPES);
+    const SUB = {
+      openai: "Chat Completion", instruct: "Instruct", context: "Context",
+      sysprompt: "系统提示", reasoning: "推理", kobold: "KoboldAI", novel: "NovelAI",
+      textgen: "TextGen", "quick-replies": "快速回复", theme: "主题", css: "CSS",
+      background: "背景", font: "字体",
+    };
+    const LICENSE_LABEL = { unset: "未填写", allowed: "允许", forbidden: "禁止", conditional: "有条件", pending: "待确认" };
+    const LICENSE_FIELDS = [
+      ["license_repost", "二传二改"],
+      ["license_tavern", "酒馆使用"],
+      ["license_phone", "小手机使用"],
+    ];
+    const BUCKET_LABEL = { genre: "题材", world: "世界观", license: "许可", recommend: "推荐", basic: "基础信息", purpose: "用途" };
+    const LINK_LABEL = {
+      character_worldbook: "角色卡 ↔ 世界书",
+      worldbook_extra: "世界书 ↔ 番外",
+      character_relation: "角色关系",
+      version: "版本",
+      bundle: "成套包",
+      persona_character: "面具 ↔ 角色卡",
+      preset_worldbook: "预设 ↔ 世界书",
+      theme_background: "主题 ↔ 背景",
+    };
+    let currentType = "all";
+    let items = [];
+    let taxonomy = { tags: [], themes: [], link_kinds: [], buckets: [] };
+    let openId = null;
+    const listEl = document.getElementById("list");
+    const chipsEl = document.getElementById("chips");
+    const qEl = document.getElementById("q");
+    const backdrop = document.getElementById("backdrop");
+    const panel = document.getElementById("panel");
+
+    TYPES.forEach(([id, label]) => {
+      const btn = document.createElement("button");
+      btn.type = "button";
+      btn.textContent = label;
+      btn.dataset.type = id;
+      if (id === "all") btn.classList.add("on");
+      btn.addEventListener("click", () => {
+        currentType = id;
+        [...chipsEl.children].forEach((b) => b.classList.toggle("on", b.dataset.type === id));
+        fillThemeOptions();
+        load();
+      });
+      chipsEl.appendChild(btn);
+    });
+
+    let timer = null;
+    ["q", "tag"].forEach((id) => {
+      document.getElementById(id).addEventListener("input", () => {
+        clearTimeout(timer);
+        timer = setTimeout(load, 220);
+      });
+    });
+    ["review", "theme", "bucket"].forEach((id) => {
+      document.getElementById(id).addEventListener("change", load);
+    });
+
+    function fmt(iso) {
+      if (!iso) return "";
+      const d = new Date(iso);
+      if (Number.isNaN(d.getTime())) return iso;
+      const p = (n) => String(n).padStart(2, "0");
+      return `${d.getFullYear()}-${p(d.getMonth()+1)}-${p(d.getDate())} ${p(d.getHours())}:${p(d.getMinutes())}`;
+    }
+    function typeText(it) {
+      const base = TYPE_LABEL[it.type] || it.type;
+      if (it.subtype && SUB[it.subtype]) return base + " · " + SUB[it.subtype];
+      return base;
+    }
+    function hasThumb(it) {
+      if (it.type === "character" || it.type === "persona") return true;
+      if (it.type === "imagegen" && (it.thumbnail_url || it.discord_jump_url)) return true;
+      if (it.subtype === "background" && it.has_file) return true;
+      return false;
+    }
+    function thumbSrc(it) {
+      if (it.type === "imagegen" && it.thumbnail_url) return it.thumbnail_url;
+      return "/_lib/thumb/" + it.id;
+    }
+    function escapeHtml(s) {
+      return String(s ?? "").replace(/[&<>"']/g, (c) => ({
+        "&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;","'":"&#39;"
+      }[c]));
+    }
+    function escapeAttr(s) { return escapeHtml(s); }
+
+    async function loadTaxonomy() {
+      try {
+        const res = await fetch("/_lib/api/taxonomy", { credentials: "same-origin", headers: { "Accept": "application/json" } });
+        taxonomy = await res.json();
+      } catch (err) {
+        taxonomy = { tags: [], themes: [], buckets: [], link_kinds: [] };
+      }
+      const bucketSel = document.getElementById("bucket");
+      const current = bucketSel.value;
+      bucketSel.innerHTML = '<option value="">全部标签类别</option>';
+      (taxonomy.buckets || []).forEach((b) => {
+        const opt = document.createElement("option");
+        opt.value = b.id; opt.textContent = b.label;
+        bucketSel.appendChild(opt);
+      });
+      bucketSel.value = current;
+      fillThemeOptions();
+    }
+
+    function fillThemeOptions() {
+      const sel = document.getElementById("theme");
+      const current = sel.value;
+      sel.innerHTML = '<option value="">全部主题</option>';
+      const typ = currentType === "all" ? null : currentType;
+      const seen = new Set();
+      (taxonomy.themes || []).forEach((t) => {
+        if (typ && t.type !== typ && t.type !== "any") return;
+        if (seen.has(t.path)) return;
+        seen.add(t.path);
+        const opt = document.createElement("option");
+        opt.value = t.path; opt.textContent = t.path;
+        sel.appendChild(opt);
+      });
+      if ([...sel.options].some((o) => o.value === current)) sel.value = current;
+    }
+
+    async function load() {
+      const params = new URLSearchParams();
+      if (currentType !== "all") params.set("type", currentType);
+      const q = qEl.value.trim();
+      if (q) params.set("q", q);
+      const review = document.getElementById("review").value;
+      if (review) params.set("review", review);
+      const theme = document.getElementById("theme").value;
+      if (theme) params.set("theme", theme);
+      const bucket = document.getElementById("bucket").value;
+      if (bucket) params.set("bucket", bucket);
+      const tag = document.getElementById("tag").value.trim();
+      if (tag) params.set("tag", tag);
+      listEl.innerHTML = '<p class="status">正在加载…</p>';
+      try {
+        const res = await fetch("/_lib/api/items?" + params.toString(), {
+          credentials: "same-origin",
+          headers: { "Accept": "application/json" },
+        });
+        const data = await res.json();
+        items = data.items || [];
+        renderList();
+      } catch (err) {
+        listEl.innerHTML = '<p class="status">加载失败，请稍后重试。</p>';
+      }
+    }
+
+    function renderList() {
+      if (!items.length) {
+        listEl.innerHTML = '<div class="empty"><p>还没有符合条件的资源。</p><p>把文件发给 Discord 机器人，或转发到对应论坛频道。入库后会在子区弹出点选卡片，日常整理以那里为主。</p></div>';
+        return;
+      }
+      const grid = document.createElement("div");
+      grid.className = "grid";
+      items.forEach((it) => {
+        const btn = document.createElement("button");
+        btn.type = "button";
+        btn.className = "card";
+        const thumbClass = hasThumb(it) ? "thumb" : "thumb icon";
+        const thumbInner = hasThumb(it)
+          ? `<img src="${escapeAttr(thumbSrc(it))}" alt="" loading="lazy">`
+          : (TYPE_LABEL[it.type] || "");
+        const themeLine = (it.themes && it.themes.length) ? it.themes.join("、") : "";
+        const pending = it.review_status !== "confirmed" ? " · 待确认" : "";
+        btn.innerHTML = `
+          <div class="${thumbClass}">${thumbInner}</div>
+          <div class="meta">
+            <h3>${escapeHtml(it.title || it.original_filename || "未命名")}</h3>
+            <p class="tag">${escapeHtml(typeText(it))}${it.imported_as_name ? " · 已导入" : ""}${pending}</p>
+            <p class="date">${escapeHtml(fmt(it.updated_at || it.created_at))}</p>
+            ${themeLine ? `<p class="note">${escapeHtml(themeLine)}</p>` : (it.summary || it.note ? `<p class="note">${escapeHtml(it.summary || it.note)}</p>` : "")}
+          </div>`;
+        btn.addEventListener("click", () => openDetail(it.id));
+        grid.appendChild(btn);
+      });
+      listEl.innerHTML = "";
+      listEl.appendChild(grid);
+    }
+
+    async function openDetail(id) {
+      openId = id;
+      backdrop.hidden = false;
+      backdrop.classList.add("show");
+      panel.innerHTML = "<p class='hint'>正在加载…</p>";
+      try {
+        const res = await fetch("/_lib/api/items/" + id, {
+          credentials: "same-origin",
+          headers: { "Accept": "application/json" },
+        });
+        const data = await res.json();
+        if (!res.ok || !data.item) throw new Error(data.message || "找不到这条资源");
+        renderDetail(data.item);
+      } catch (err) {
+        panel.innerHTML = `<p class="msg show err">${escapeHtml(err.message)}</p><div class="btns"><button type="button" class="action ghost" id="close">关闭</button></div>`;
+        document.getElementById("close").onclick = closeDetail;
+      }
+    }
+
+    function licenseText(it) {
+      return LICENSE_FIELDS.map(([k, lab]) => `${lab}：${LICENSE_LABEL[it[k] || "unset"] || it[k]}`).join("；");
+    }
+    function tagChips(it) {
+      return (it.tags || []).map((t) => {
+        const lab = (BUCKET_LABEL[t.bucket] || t.bucket) + ":" + t.name;
+        const cls = t.pending ? "mini-chip pending" : "mini-chip";
+        return `<span class="${cls}">${escapeHtml(lab)}</span>`;
+      }).join("");
+    }
+    function linkLines(it) {
+      return (it.links || []).map((link) => {
+        const other = (link.from_id === it.id) ? link.to_id_item : link.from_id_item;
+        const name = (other && other.title) ? other.title : ("#" + (other && other.id || link.to_id));
+        const kind = LINK_LABEL[link.kind] || link.kind;
+        const oid = other && other.id ? other.id : "";
+        const open = oid ? ` data-open="${oid}"` : "";
+        return `<p class="row">${escapeHtml(kind)} → <a href="#" class="link-jump"${open}>${escapeHtml(name)}</a>（关联编号 ${link.id}）</p>`;
+      }).join("");
+    }
+
+    function renderDetail(it) {
+      const imported = !!it.imported_as_name;
+      const canImport = it.importable;
+      let importHint = "";
+      if (it.type === "imagegen" || it.catalog_only) {
+        importHint = "生图不写入资源库文件，也不导入酒馆。请从 Discord 原帖查看图片。";
+      } else if (it.type === "persona") {
+        importHint = "导入只会把图片复制到酒馆的「User Avatars」文件夹，不会改 settings.json。请到酒馆里自行添加或选择这张面具。";
+      } else if (it.type === "style") {
+        importHint = "文风以库内条目和可检索片段为主，不提供一键导入。";
+      } else if (it.type === "other") {
+        importHint = "这类资源不能一键导入酒馆。聊天记录不会导入；正则脚本也不会写入设置。";
+      } else if (canImport) {
+        importHint = "导入会复制到酒馆对应的文件夹，遇到重名会自动加 _2、_3 这样的后缀，不会覆盖已有文件。导入后请刷新酒馆页面再查看。";
+      }
+      const hero = hasThumb(it)
+        ? `<div class="hero"><img src="${escapeAttr(thumbSrc(it))}" alt=""></div>`
+        : "";
+      const discord = it.discord_jump_url
+        ? `<p class="row">Discord：<a href="${escapeHtml(it.discord_jump_url)}" target="_blank" rel="noopener">打开原帖</a></p>`
+        : "";
+      const importedLine = imported
+        ? `<p class="row">已导入为：${escapeHtml(it.imported_as_name)}（${escapeHtml(fmt(it.imported_at))}）</p>`
+        : "";
+      const importBtn = canImport
+        ? (imported
+            ? `<button type="button" class="action again" id="btn-import">再次导入（使用新文件名）</button>`
+            : `<button type="button" class="action" id="btn-import">导入酒馆</button>`)
+        : "";
+      const download = (it.catalog_only || !it.original_filename && it.type === "imagegen")
+        ? ""
+        : `<a class="action ghost" href="/_lib/file/${it.id}">下载原文件</a>`;
+      const frags = (it.fragments || []).map((f) => `<p class="row">片段 · ${escapeHtml(f.kind || "")} · ${escapeHtml(f.title || "")}：${escapeHtml((f.excerpt || "").slice(0, 180))}</p>`).join("");
+      panel.innerHTML = `
+        <button type="button" class="close-x" id="close" aria-label="关闭">×</button>
+        ${hero}
+        <h2>${escapeHtml(it.title || "未命名")}</h2>
+        <p class="row">${escapeHtml(typeText(it))} · ${it.review_status === "confirmed" ? "已确认" : "待确认"} · 编号 ${it.id}</p>
+        <p class="row">原文件名：${escapeHtml(it.original_filename || "—")}</p>
+        <p class="row">入库时间：${escapeHtml(fmt(it.created_at))}</p>
+        <p class="row">作者：${escapeHtml(it.author || "—")}</p>
+        <p class="row">来源链接：${it.source_url ? `<a href="${escapeHtml(it.source_url)}" target="_blank" rel="noopener">${escapeHtml(it.source_url)}</a>` : "—"}</p>
+        ${importedLine}
+        ${discord}
+        <p class="row">简介：${escapeHtml(it.summary || "（无）")}</p>
+        <p class="row">备注：${escapeHtml(it.note || "（无）")}</p>
+        <p class="row">主题：${escapeHtml((it.themes || []).join("、") || "（无）")}</p>
+        <p class="row">标签：${tagChips(it) || "（无）"}</p>
+        <p class="row">许可：${escapeHtml(licenseText(it))}</p>
+        ${it.license_note ? `<p class="row">许可备注：${escapeHtml(it.license_note)}</p>` : ""}
+        <p class="row">推荐预设：${escapeHtml((it.recommended_presets || []).join("、") || "（无）")}</p>
+        <p class="row">推荐模型：${escapeHtml((it.recommended_models || []).join("、") || "（无）")}</p>
+        <p class="row">推荐画师串：${escapeHtml((it.recommended_artist_strings || []).join("、") || "（无）")}</p>
+        ${it.worldbook_origin ? `<p class="row">世界书来源：${escapeHtml(it.worldbook_origin)}</p>` : ""}
+        ${linkLines(it) || '<p class="row">关联：（无）</p>'}
+        ${frags}
+        ${it.uncertain ? "<p class='row'>类型为预填，尚未确认。</p>" : ""}
+        <p class="hint">${escapeHtml(importHint)}</p>
+        <p class="msg" id="detail-msg"></p>
+        <div class="btns">
+          ${importBtn}
+          <button type="button" class="action again" id="btn-edit">编辑元数据</button>
+          ${download}
+          <button type="button" class="action ghost" id="close2">关闭</button>
+        </div>`;
+      document.getElementById("close").onclick = closeDetail;
+      document.getElementById("close2").onclick = closeDetail;
+      const btn = document.getElementById("btn-import");
+      if (btn) btn.addEventListener("click", () => doImport(it, imported));
+      document.getElementById("btn-edit").onclick = () => renderEditor(it);
+      panel.querySelectorAll(".link-jump").forEach((a) => {
+        a.addEventListener("click", (e) => {
+          e.preventDefault();
+          const id = a.getAttribute("data-open");
+          if (id) openDetail(id);
+        });
+      });
+    }
+
+    function field(label, inner) {
+      return `<label class="lab">${escapeHtml(label)}</label>${inner}`;
+    }
+    function renderEditor(it) {
+      const typeOpts = TYPES.filter(([id]) => id !== "all").map(([id, lab]) => `<option value="${id}" ${it.type===id?"selected":""}>${lab}</option>`).join("");
+      const licOpts = (key) => Object.entries(LICENSE_LABEL).map(([id, lab]) => `<option value="${id}" ${(it[key]||"unset")===id?"selected":""}>${lab}</option>`).join("");
+      const linkOpts = Object.entries(LINK_LABEL).map(([id, lab]) => `<option value="${id}">${lab}</option>`).join("");
+      const tagText = (it.tags || []).map((t) => `${t.bucket}:${t.name}`).join("\n");
+      panel.innerHTML = `
+        <button type="button" class="close-x" id="close" aria-label="关闭">×</button>
+        <h2>编辑「${escapeHtml(it.title || "未命名")}」</h2>
+        <p class="hint">改完会写入资源库。若改了类型，Discord 子区会由机器人稍后挪到对应频道。日常点选仍建议在 Discord 里做。</p>
+        <div class="edit-grid">
+          ${field("类型", `<select class="filter" id="e-type">${typeOpts}</select>`)}
+          ${field("标题", `<input class="field" id="e-title" value="${escapeAttr(it.title || "")}">`)}
+          ${field("作者", `<input class="field" id="e-author" value="${escapeAttr(it.author || "")}">`)}
+          ${field("来源链接", `<input class="field" id="e-source" value="${escapeAttr(it.source_url || "")}">`)}
+          ${field("简介摘要", `<textarea class="field" id="e-summary" rows="3">${escapeHtml(it.summary || "")}</textarea>`)}
+          ${field("备注", `<textarea class="field" id="e-note" rows="3">${escapeHtml(it.note || "")}</textarea>`)}
+          ${field("主题分类（一行一条，例如 科幻/赛博朋克）", `<textarea class="field" id="e-themes" rows="2">${escapeHtml((it.themes || []).join("\n"))}</textarea>`)}
+          ${field("标签（一行一条，格式 类别:名称，类别为 genre/world/license/recommend/basic/purpose）", `<textarea class="field" id="e-tags" rows="4">${escapeHtml(tagText)}</textarea>`)}
+          ${field("二传二改", `<select class="filter" id="e-lic-repost">${licOpts("license_repost")}</select>`)}
+          ${field("酒馆使用", `<select class="filter" id="e-lic-tavern">${licOpts("license_tavern")}</select>`)}
+          ${field("小手机使用", `<select class="filter" id="e-lic-phone">${licOpts("license_phone")}</select>`)}
+          ${field("许可备注", `<textarea class="field" id="e-lic-note" rows="2">${escapeHtml(it.license_note || "")}</textarea>`)}
+          ${field("推荐预设（逗号分隔）", `<input class="field" id="e-presets" value="${escapeAttr((it.recommended_presets || []).join("，"))}">`)}
+          ${field("推荐模型", `<input class="field" id="e-models" value="${escapeAttr((it.recommended_models || []).join("，"))}">`)}
+          ${field("推荐画师串", `<input class="field" id="e-artists" value="${escapeAttr((it.recommended_artist_strings || []).join("，"))}">`)}
+          ${field("状态", `<select class="filter" id="e-review"><option value="pending" ${it.review_status!=="confirmed"?"selected":""}>待确认</option><option value="confirmed" ${it.review_status==="confirmed"?"selected":""}>已确认</option></select>`)}
+          ${field("添加关联：类型", `<select class="filter" id="e-link-kind">${linkOpts}</select>`)}
+          ${field("添加关联：对方编号", `<input class="field" id="e-link-id" placeholder="例如 12">`)}
+          ${field("删除关联编号（逗号分隔）", `<input class="field" id="e-link-del" placeholder="关联编号">`)}
+        </div>
+        <p class="msg" id="detail-msg"></p>
+        <div class="btns">
+          <button type="button" class="action" id="btn-save">保存</button>
+          <button type="button" class="action ghost" id="btn-back">返回详情</button>
+        </div>`;
+      document.getElementById("close").onclick = closeDetail;
+      document.getElementById("btn-back").onclick = () => renderDetail(it);
+      document.getElementById("btn-save").onclick = () => saveEdit(it);
+    }
+
+    async function saveEdit(it) {
+      const msg = document.getElementById("detail-msg");
+      const tags = document.getElementById("e-tags").value.split(/\n+/).map((line) => line.trim()).filter(Boolean).map((line) => {
+        const idx = line.indexOf(":");
+        if (idx === -1) return { bucket: "genre", name: line };
+        return { bucket: line.slice(0, idx).trim(), name: line.slice(idx + 1).trim() };
+      });
+      const payload = {
+        type: document.getElementById("e-type").value,
+        title: document.getElementById("e-title").value,
+        author: document.getElementById("e-author").value,
+        source_url: document.getElementById("e-source").value,
+        summary: document.getElementById("e-summary").value,
+        note: document.getElementById("e-note").value,
+        themes: document.getElementById("e-themes").value.split(/\n+/).map((s) => s.trim()).filter(Boolean),
+        tags,
+        license_repost: document.getElementById("e-lic-repost").value,
+        license_tavern: document.getElementById("e-lic-tavern").value,
+        license_phone: document.getElementById("e-lic-phone").value,
+        license_note: document.getElementById("e-lic-note").value,
+        recommended_presets: document.getElementById("e-presets").value,
+        recommended_models: document.getElementById("e-models").value,
+        recommended_artist_strings: document.getElementById("e-artists").value,
+        review_status: document.getElementById("e-review").value,
+      };
+      const linkId = document.getElementById("e-link-id").value.trim();
+      if (linkId) {
+        payload.links_add = [{ kind: document.getElementById("e-link-kind").value, item_id: Number(linkId) }];
+      }
+      const del = document.getElementById("e-link-del").value.split(/[,，\s]+/).map((s) => s.trim()).filter(Boolean);
+      if (del.length) payload.links_remove = del;
+      showMsg(msg, "正在保存…", "warn");
+      try {
+        const res = await fetch("/_lib/api/items/" + it.id, {
+          method: "POST",
+          credentials: "same-origin",
+          headers: { "Accept": "application/json", "Content-Type": "application/json" },
+          body: JSON.stringify(payload),
+        });
+        const data = await res.json().catch(() => ({}));
+        if (!res.ok || data.ok === false) throw new Error(data.message || "保存失败");
+        showMsg(msg, "已保存。若改了类型，Discord 子区会稍后自动移动。", "ok");
+        await loadTaxonomy();
+        await load();
+        if (data.item) renderDetail(data.item);
+      } catch (err) {
+        showMsg(msg, err.message, "err");
+      }
+    }
+
+    async function doImport(it, again) {
+      const msg = document.getElementById("detail-msg");
+      if (again) {
+        const ok = window.confirm("再次导入会使用新的文件名，不会覆盖已有文件。确定要再导入一次吗？");
+        if (!ok) return;
+      }
+      const btn = document.getElementById("btn-import");
+      if (btn) btn.disabled = true;
+      showMsg(msg, "正在导入…", "warn");
+      try {
+        const res = await fetch("/_lib/api/items/" + it.id + "/import", {
+          method: "POST",
+          credentials: "same-origin",
+          headers: { "Accept": "application/json", "Content-Type": "application/json" },
+          body: JSON.stringify({ confirm: !!again }),
+        });
+        const data = await res.json().catch(() => ({}));
+        if (!res.ok || data.ok === false) {
+          throw new Error(data.message || "导入失败，请稍后重试。");
+        }
+        let text = `已导入为「${data.dest_name}」。请刷新酒馆页面后再查看。`;
+        if (it.type === "persona") {
+          text = `已复制为「${data.dest_name}」到酒馆的「User Avatars」。请到酒馆里自行添加或选择这张面具，当前设置不会被改动。`;
+        }
+        showMsg(msg, text, "ok");
+        await load();
+        const r = await fetch("/_lib/api/items/" + it.id, { credentials: "same-origin" });
+        const d = await r.json();
+        if (d.item) renderDetail(d.item);
+      } catch (err) {
+        showMsg(msg, err.message, "err");
+        if (btn) btn.disabled = false;
+      }
+    }
+
+    function showMsg(el, text, kind) {
+      if (!el) return;
+      el.textContent = text || "";
+      el.className = "msg" + (text ? " show " + kind : "");
+    }
+    function closeDetail() {
+      backdrop.classList.remove("show");
+      backdrop.hidden = true;
+      openId = null;
+    }
+    backdrop.addEventListener("click", (e) => { if (e.target === backdrop) closeDetail(); });
+    document.addEventListener("keydown", (e) => { if (e.key === "Escape") closeDetail(); });
+    loadTaxonomy().then(load);
+  </script>
+</body>
+</html>

@@ -1,0 +1,17 @@
+[Unit]
+Description=SillyTavern control page (proxy switch and cache refresh)
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=root
+Group=root
+WorkingDirectory=/opt/tavern-ctl
+ExecStart=/usr/bin/python3 /opt/tavern-ctl/tavern-ctl.py
+Restart=on-failure
+RestartSec=3
+# Only needs to run the fixed proxyctl on|off|status commands and serve /_ctl/.
+
+[Install]
+WantedBy=multi-user.target

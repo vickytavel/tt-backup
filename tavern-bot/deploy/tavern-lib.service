@@ -1,0 +1,23 @@
+[Unit]
+Description=SillyTavern resource library web UI
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=tavernbot
+Group=tavernlib
+WorkingDirectory=/opt/tavern-bot
+Environment=TAVERN_LIBRARY=/opt/tavern-library
+Environment=ST_USER_ROOT=/opt/sillytavern/data/default-user
+Environment=TAVERN_ALLOWED_ORIGIN=https://tavern.vickytavel.online
+Environment=TAVERN_LIB_HOST=127.0.0.1
+Environment=TAVERN_LIB_PORT=8003
+ExecStart=/opt/tavern-bot/venv/bin/python /opt/tavern-bot/web.py
+Restart=on-failure
+RestartSec=3
+# NoNewPrivileges is left off so the import helper can be run via sudo -u tavern.
+PrivateTmp=yes
+
+[Install]
+WantedBy=multi-user.target

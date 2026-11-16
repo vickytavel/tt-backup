@@ -1,0 +1,7 @@
+[Unit]
+Description=Refresh mihomo config from subscription
+After=network-online.target mihomo.service
+
+[Service]
+Type=oneshot
+ExecStart=/usr/local/sbin/mihomo-refresh

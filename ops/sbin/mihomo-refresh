@@ -1,0 +1,112 @@
+#!/usr/bin/env python3
+"""Fetch Clash subscription from /etc/mihomo/sub.url, keep only proxies, write a
+safe local-only mihomo config, and validate with mihomo -t. Never prints secrets.
+
+The VPS uses a dedicated subscription and keeps mihomo always on (Discord bot,
+GitHub, extension installs). After a successful refresh, mihomo is restarted
+and left running. Direct fetch is tried first; if that fails, the existing
+local proxy is started (if needed) to retry, then left running.
+"""
+import os, subprocess, sys, tempfile, time, urllib.request, yaml
+
+D = '/etc/mihomo'
+CFG = os.path.join(D, 'config.yaml')
+LOCAL_PROXY = 'http://127.0.0.1:7890'
+
+
+def fetch(url, via_proxy):
+    handlers = [urllib.request.ProxyHandler({'http': LOCAL_PROXY, 'https': LOCAL_PROXY} if via_proxy else {})]
+    op = urllib.request.build_opener(*handlers)
+    req = urllib.request.Request(url, headers={'User-Agent': 'clash.meta'})
+    with op.open(req, timeout=60) as r:
+        return r.read()
+
+
+def is_active():
+    return subprocess.run(['systemctl', 'is-active', '--quiet', 'mihomo.service']).returncode == 0
+
+
+def start_mihomo():
+    subprocess.run(['systemctl', 'start', 'mihomo.service'], check=False)
+    for _ in range(50):
+        r = subprocess.run(['ss', '-lnt'], capture_output=True, text=True)
+        if '127.0.0.1:7890' in r.stdout:
+            return True
+        time.sleep(0.1)
+    return False
+
+
+def build(raw):
+    sub = yaml.safe_load(raw)
+    proxies = [p for p in (sub.get('proxies') or []) if isinstance(p, dict) and p.get('name') and p.get('server')]
+    if len(proxies) < 1:
+        raise RuntimeError('subscription contained no proxies')
+    names = [p['name'] for p in proxies]
+    return {
+        'mixed-port': 7890,
+        'bind-address': '127.0.0.1',
+        'allow-lan': False,
+        'ipv6': False,
+        'mode': 'rule',
+        'log-level': 'warning',
+        'find-process-mode': 'off',
+        'external-controller': '',
+        'unified-delay': True,
+        'profile': {'store-selected': False, 'store-fake-ip': False},
+        'tun': {'enable': False},
+        'dns': {'enable': False},
+        'proxies': proxies,
+        'proxy-groups': [
+            {'name': 'AUTO', 'type': 'url-test', 'proxies': names,
+             'url': 'https://www.gstatic.com/generate_204', 'interval': 1800,
+             'tolerance': 100, 'timeout': 5000, 'lazy': False},
+            {'name': 'PROXY', 'type': 'select', 'proxies': ['AUTO'] + names},
+        ],
+        'rules': [
+            'IP-CIDR,127.0.0.0/8,DIRECT,no-resolve',
+            'IP-CIDR,10.0.0.0/8,DIRECT,no-resolve',
+            'IP-CIDR,172.16.0.0/12,DIRECT,no-resolve',
+            'IP-CIDR,192.168.0.0/16,DIRECT,no-resolve',
+            'DOMAIN-SUFFIX,localhost,DIRECT',
+            'DOMAIN-SUFFIX,vickytavel.online,DIRECT',
+            'MATCH,PROXY',
+        ],
+    }
+
+
+def main():
+    url = open(os.path.join(D, 'sub.url')).read().strip()
+    if not url:
+        sys.exit('sub.url is empty; keeping existing config')
+    raw = None
+    try:
+        raw = fetch(url, False)
+    except Exception as e:
+        print(f'fetch (direct) failed: {type(e).__name__}', file=sys.stderr)
+        if not is_active():
+            if not start_mihomo():
+                sys.exit('could not start proxy to retry subscription fetch; keeping existing config')
+        try:
+            raw = fetch(url, True)
+        except Exception as e:
+            print(f'fetch (proxy) failed: {type(e).__name__}', file=sys.stderr)
+    if raw is None:
+        sys.exit('could not fetch subscription; keeping existing config')
+    cfg = build(raw)
+    fd, tmp = tempfile.mkstemp(dir=D, prefix='.config.', suffix='.yaml')
+    with os.fdopen(fd, 'w') as f:
+        yaml.safe_dump(cfg, f, allow_unicode=True, sort_keys=False)
+    os.chmod(tmp, 0o600)
+    t = subprocess.run(['/usr/local/bin/mihomo', '-t', '-d', D, '-f', tmp], capture_output=True, text=True)
+    if t.returncode != 0:
+        os.unlink(tmp)
+        sys.exit('new config failed validation; keeping existing config')
+    os.replace(tmp, CFG)
+    print(f'config written with {len(cfg["proxies"])} proxies')
+    if '--no-restart' not in sys.argv:
+        subprocess.run(['systemctl', 'restart', 'mihomo.service'], check=False)
+        subprocess.run(['systemctl', 'stop', 'mihomo-idle-stop.timer'], check=False)
+
+
+if __name__ == '__main__':
+    main()

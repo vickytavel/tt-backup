@@ -1,0 +1,27 @@
+[Unit]
+Description=SillyTavern Discord ingest bot
+After=network-online.target mihomo.service
+Wants=network-online.target
+Requires=mihomo.service
+
+[Service]
+Type=simple
+User=tavernbot
+Group=tavernlib
+WorkingDirectory=/opt/tavern-bot
+EnvironmentFile=-/opt/tavern-bot/.env
+Environment=HTTP_PROXY=http://127.0.0.1:7890
+Environment=HTTPS_PROXY=http://127.0.0.1:7890
+Environment=ALL_PROXY=http://127.0.0.1:7890
+Environment=NO_PROXY=127.0.0.1,localhost,::1,vickytavel.online
+Environment=http_proxy=http://127.0.0.1:7890
+Environment=https_proxy=http://127.0.0.1:7890
+Environment=no_proxy=127.0.0.1,localhost,::1,vickytavel.online
+ExecStart=/opt/tavern-bot/venv/bin/python /opt/tavern-bot/bot.py
+Restart=on-failure
+RestartSec=5
+NoNewPrivileges=yes
+PrivateTmp=yes
+
+[Install]
+WantedBy=multi-user.target

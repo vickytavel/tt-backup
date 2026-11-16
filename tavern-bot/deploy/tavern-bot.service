@@ -1,0 +1,19 @@
+[Unit]
+Description=SillyTavern Discord ingest bot
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=tavernbot
+Group=tavernlib
+WorkingDirectory=/opt/tavern-bot
+EnvironmentFile=-/opt/tavern-bot/.env
+ExecStart=/opt/tavern-bot/venv/bin/python /opt/tavern-bot/bot.py
+Restart=on-failure
+RestartSec=5
+NoNewPrivileges=yes
+PrivateTmp=yes
+
+[Install]
+WantedBy=multi-user.target

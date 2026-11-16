@@ -1,0 +1,51 @@
+# Secrets and credentials — never commit
+.env
+.env.*
+!.env.example
+*token*
+*secret*
+*htpasswd*
+htpasswd
+tavern-login.txt
+sub.url
+**/sub.url
+config.yaml
+**/config.yaml
+*.pem
+*.key
+*credentials*.json
+.cloudflared/
+
+# Databases and backups
+*.db
+*.db-*
+*.db.bak*
+library.db*
+
+# Library stored resources (VPS data dir /opt/tavern-library)
+tavern-library/character/
+tavern-library/worldbook/
+tavern-library/world/
+tavern-library/preset/
+tavern-library/persona/
+tavern-library/other/
+tavern-library/style/
+tavern-library/beautify/
+tavern-library/imagegen/
+
+# Python / runtime
+__pycache__/
+*.py[cod]
+*$py.class
+venv/
+.venv/
+*.log
+logs/
+
+# Binaries and geo data (not source)
+mihomo.gz
+# compiled binary only; do not ignore the ops/mihomo/ docs directory
+/mihomo
+**/sbin/mihomo
+**/bin/mihomo
+*.mmdb

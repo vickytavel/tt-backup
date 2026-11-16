@@ -1,0 +1,24 @@
+# mihomo always-on proxy (dedicated VPS subscription)
+
+Local-only mixed proxy on 127.0.0.1:7890. Uses a subscription reserved for
+this VPS and stays running at boot, so the Discord ingest bot can stay
+connected and GitHub / extension installs can use the same proxy.
+
+This is separate from the phone/computer subscription (3-device limit).
+
+Commands (run as root):
+
+  proxyctl on       start mihomo (and the Discord bot) if they are down
+  proxyctl off      stop mihomo AND the Discord bot (bot will go offline)
+  proxyctl status   show proxy and bot state
+
+  withproxy <cmd>   run one command through the proxy; starts mihomo if
+                    needed and leaves it running
+
+git is configured to use http://127.0.0.1:7890 for https://github.com/.
+
+Weekly subscription refresh (mihomo-refresh.timer) fetches direct first,
+falls back to the local proxy, validates with `mihomo -t`, then restarts
+mihomo and leaves it running.
+
+The 2-hour idle auto-stop is no longer used.

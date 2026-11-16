@@ -1,0 +1,128 @@
+#!/bin/sh
+# Control for the always-on local-only mihomo proxy (127.0.0.1:7890).
+# The VPS uses a dedicated subscription. Discord bot and GitHub/extension
+# traffic go through this proxy. "off" will disconnect the Discord bot.
+# Usage: proxyctl on|off|status
+set -eu
+
+UNIT=mihomo.service
+BOT_UNIT=tavern-bot.service
+IDLE_TIMER=mihomo-idle-stop.timer
+PROBE_URL=https://www.gstatic.com/generate_204
+PROBE_BUDGET=45
+
+if [ "$(id -u)" -ne 0 ]; then
+    echo "proxyctl must run as root (sudo proxyctl on|off|status)" >&2
+    exit 1
+fi
+
+port_up() {
+    ss -lnt | grep -q '127.0.0.1:7890'
+}
+
+wait_port() {
+    i=0
+    while [ "$i" -lt 50 ]; do
+        if port_up; then
+            return 0
+        fi
+        i=$((i + 1))
+        sleep 0.1
+    done
+    return 1
+}
+
+wait_usable() {
+    deadline=$(( $(date +%s) + PROBE_BUDGET ))
+    while [ "$(date +%s)" -lt "$deadline" ]; do
+        code=$(curl -sS -o /dev/null -w '%{http_code}' --connect-timeout 3 --max-time 5 \
+            -x http://127.0.0.1:7890 "$PROBE_URL" 2>/dev/null || true)
+        case "$code" in
+            2*) return 0 ;;
+        esac
+        sleep 1
+    done
+    return 1
+}
+
+disarm_idle_timer() {
+    systemctl stop "$IDLE_TIMER" 2>/dev/null || true
+}
+
+start_bot_if_present() {
+    if systemctl list-unit-files --quiet "$BOT_UNIT" 2>/dev/null || \
+       [ -f /etc/systemd/system/tavern-bot.service ]; then
+        systemctl start "$BOT_UNIT" 2>/dev/null || true
+    fi
+}
+
+stop_bot_if_present() {
+    if systemctl list-unit-files --quiet "$BOT_UNIT" 2>/dev/null || \
+       [ -f /etc/systemd/system/tavern-bot.service ]; then
+        systemctl stop "$BOT_UNIT" 2>/dev/null || true
+    fi
+}
+
+cmd_on() {
+    disarm_idle_timer
+    if systemctl is-active --quiet "$UNIT" && port_up; then
+        if wait_usable; then
+            start_bot_if_present
+            echo "mihomo already running on 127.0.0.1:7890 (always-on, dedicated sub)" >&2
+            return 0
+        fi
+        echo "mihomo is running but not yet usable; waiting failed" >&2
+        exit 1
+    fi
+    systemctl start "$UNIT"
+    if ! wait_port; then
+        echo "mihomo started but 127.0.0.1:7890 did not become ready" >&2
+        systemctl stop "$UNIT" || true
+        exit 1
+    fi
+    if ! wait_usable; then
+        echo "mihomo is listening but did not become usable within ${PROBE_BUDGET}s" >&2
+        systemctl stop "$UNIT" || true
+        exit 1
+    fi
+    start_bot_if_present
+    echo "mihomo started on 127.0.0.1:7890 (always-on, dedicated sub)" >&2
+}
+
+cmd_off() {
+    echo "warning: stopping the proxy will disconnect the Discord bot" >&2
+    stop_bot_if_present
+    disarm_idle_timer
+    systemctl stop "$UNIT" 2>/dev/null || true
+    echo "mihomo stopped; Discord bot stopped" >&2
+}
+
+cmd_status() {
+    if systemctl is-active --quiet "$UNIT" && port_up; then
+        state="running (127.0.0.1:7890, always-on)"
+    elif systemctl is-active --quiet "$UNIT"; then
+        state="active but 127.0.0.1:7890 is not listening"
+    else
+        state="stopped"
+    fi
+    echo "status: $state"
+    echo "idle auto-stop: not used (dedicated always-on subscription)"
+    if [ -f /etc/systemd/system/tavern-bot.service ]; then
+        if systemctl is-active --quiet "$BOT_UNIT"; then
+            echo "discord bot: running"
+        else
+            echo "discord bot: stopped"
+        fi
+    fi
+}
+
+case "${1:-}" in
+    on) cmd_on ;;
+    off) cmd_off ;;
+    status) cmd_status ;;
+    *)
+        echo "usage: proxyctl on|off|status" >&2
+        echo "       withproxy <cmd>  # uses the already-running proxy; starts it if needed and leaves it on" >&2
+        exit 2
+        ;;
+esac

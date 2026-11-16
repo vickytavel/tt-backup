@@ -1,0 +1,9 @@
+[Unit]
+Description=Stop mihomo 2 hours after it was last started
+Documentation=file:///etc/mihomo/README
+
+[Timer]
+OnActiveSec=2h
+AccuracySec=30s
+RemainAfterElapse=no
+Unit=mihomo-idle-stop.service

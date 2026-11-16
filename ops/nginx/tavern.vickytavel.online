@@ -1,0 +1,40 @@
+# Public HTTP front for tavern.vickytavel.online (direct / Let's Encrypt later).
+# Proxies to the existing 127.0.0.1:8001 cache layer. Does not replace it;
+# cloudflared still uses 8001. HTTPS will be added by certbot --nginx.
+server {
+    listen 80;
+    listen [::]:80;
+    server_name tavern.vickytavel.online;
+
+    client_max_body_size 500m;
+
+    access_log /var/log/nginx/tavern-public-access.log;
+    error_log  /var/log/nginx/tavern-public-error.log;
+
+    auth_basic "SillyTavern";
+    auth_basic_user_file /etc/nginx/.htpasswd-tavern;
+
+    # HTTP-01 challenges must not require a password.
+    location ^~ /.well-known/acme-challenge/ {
+        auth_basic off;
+        default_type text/plain;
+        root /var/www/html;
+        try_files $uri =404;
+    }
+
+    location / {
+        proxy_pass http://127.0.0.1:8001;
+        proxy_http_version 1.1;
+        proxy_set_header Host $host;
+        proxy_set_header Upgrade $http_upgrade;
+        proxy_set_header Connection $connection_upgrade;
+        proxy_set_header X-Real-IP "";
+        proxy_set_header X-Forwarded-For "";
+        proxy_set_header CF-Connecting-IP "";
+        proxy_buffering off;
+        proxy_request_buffering off;
+        proxy_connect_timeout 60s;
+        proxy_send_timeout 600s;
+        proxy_read_timeout 600s;
+    }
+}

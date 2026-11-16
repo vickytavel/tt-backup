@@ -1,0 +1,7 @@
+[Unit]
+Description=Stop mihomo after idle timeout
+Documentation=file:///etc/mihomo/README
+
+[Service]
+Type=oneshot
+ExecStart=/bin/systemctl stop mihomo.service

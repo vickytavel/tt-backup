@@ -1,0 +1,29 @@
+酒馆资源库 / Discord 机器人 回滚说明
+================================
+
+部署时会把 nginx 配置和控制页各留一份带时间戳的备份。
+
+停止服务（机器人本来也可能没启用）：
+
+  systemctl disable --now tavern-bot.service
+  systemctl disable --now tavern-lib.service
+
+还原 nginx：
+
+  ls /etc/nginx/sites-available/tavern-cache.bak-*
+  cp -a /etc/nginx/sites-available/tavern-cache.bak-<TIMESTAMP> /etc/nginx/sites-available/tavern-cache
+  # 可选：rm /etc/nginx/snippets/tavern-lib-proxy.conf
+  nginx -t && systemctl reload nginx
+
+还原控制页（如果改过）：
+
+  ls /opt/tavern-ctl/tavern-ctl.py.bak-*
+  cp -a /opt/tavern-ctl/tavern-ctl.py.bak-<TIMESTAMP> /opt/tavern-ctl/tavern-ctl.py
+  systemctl restart tavern-ctl.service
+
+不要删除 /opt/tavern-library/，除非你确定要丢掉已入库的资源。
+不要改 Cloudflare Access、SillyTavern 的 listen/bind，或 config.yaml 的认证设置。
+不要重启或改动 dsh-web。
+
+程序目录：/opt/tavern-bot/
+网页：https://tavern.vickytavel.online/_lib/

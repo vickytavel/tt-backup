@@ -1,0 +1,5 @@
+# Allow tavernbot to copy a library file into SillyTavern as user tavern.
+# The helper reads a JSON payload on stdin and validates paths itself.
+# No command-line arguments are permitted.
+Defaults:tavernbot !requiretty
+tavernbot ALL=(tavern) NOPASSWD: /opt/tavern-bot/venv/bin/python /opt/tavern-bot/import_helper.py

@@ -1,0 +1,17 @@
+#!/bin/sh
+# Run a single command through the local mihomo proxy (127.0.0.1:7890).
+# Starts the proxy if it is down, and leaves it running (VPS dedicated
+# always-on subscription; stopping it would disconnect the Discord bot).
+# Example: withproxy npm install ...   |   withproxy curl -I https://github.com
+set -eu
+
+P=http://127.0.0.1:7890
+
+if ! systemctl is-active --quiet mihomo.service; then
+    /usr/local/bin/proxyctl on
+fi
+
+export http_proxy=$P https_proxy=$P HTTP_PROXY=$P HTTPS_PROXY=$P all_proxy=$P ALL_PROXY=$P
+export no_proxy=localhost,127.0.0.1,::1,vickytavel.online NO_PROXY=localhost,127.0.0.1,::1,vickytavel.online
+
+"$@"

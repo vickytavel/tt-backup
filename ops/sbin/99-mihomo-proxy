@@ -1,0 +1,4 @@
+#!/bin/sh
+echo
+echo "GitHub proxy (mihomo) is on-demand:  proxyctl on|off|status  (auto-stops after 2h)"
+echo "Or: withproxy <cmd>  — starts the proxy if needed and stops it after the command."

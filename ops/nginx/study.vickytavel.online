@@ -1,0 +1,30 @@
+server {
+    server_name study.vickytavel.online;
+
+    root /var/www/tiku;
+    index index.html;
+
+    include snippets/dsh-agent.conf;
+
+    location / {
+        try_files $uri /index.html;
+    }
+
+    listen [::]:443 ssl ipv6only=on;
+    listen 443 ssl;
+    ssl_certificate /etc/letsencrypt/live/study.vickytavel.online/fullchain.pem;
+    ssl_certificate_key /etc/letsencrypt/live/study.vickytavel.online/privkey.pem;
+    include /etc/letsencrypt/options-ssl-nginx.conf;
+    ssl_dhparam /etc/letsencrypt/ssl-dhparams.pem;
+}
+
+server {
+    if ($host = study.vickytavel.online) {
+        return 301 https://$host$request_uri;
+    }
+
+    listen 80;
+    listen [::]:80;
+    server_name study.vickytavel.online;
+    return 404;
+}
