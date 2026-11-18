@@ -141,7 +141,7 @@ def order_tag_choices(choices: list[dict[str, Any]], selected_ids: set[int]) -> 
     """已选标签排在前面，未选保持原有顺序。
 
     tag_bucket_view 和 apply_tag_select 必须用同一个顺序来计算前 24 个可见选项，
-    否则整桶替换时会把"已选但没显示出来"的标签悄悄删掉。
+    否则整桶替换时会把“已选但没显示出来”的标签悄悄删掉。
     """
     selected = [t for t in choices if int(t["id"]) in selected_ids]
     rest = [t for t in choices if int(t["id"]) not in selected_ids]
@@ -216,7 +216,7 @@ def info_view(item_id: int) -> discord.ui.View:
 
 def links_view(item_id: int) -> discord.ui.View:
     view = discord.ui.View(timeout=None)
-    options = [discord.SelectOption(label=label, value=key) for key, lab in LINK_KINDS]
+    options = [discord.SelectOption(label=label, value=key) for key, label in LINK_KINDS]
     view.add_item(
         discord.ui.Select(
             placeholder="选择关联类型，再填写对方编号",
