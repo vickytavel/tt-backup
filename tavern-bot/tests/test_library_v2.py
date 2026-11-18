@@ -47,7 +47,7 @@ class MigrationTests(unittest.TestCase):
         self.assertIn("review_status", item)
         self.assertEqual(item.get("review_status") or "pending", "pending")
         self.assertTrue(any(t["path"] == "现代" for t in store.list_theme_categories("character")))
-        tags = store.list_tags("genre")
+        tags = store.list_tags("relation")
         self.assertTrue(any(t["name"] == "青梅竹马" for t in tags))
         with store._connect() as c:
             ver = c.execute("SELECT value FROM schema_meta WHERE key = 'version'").fetchone()["value"]
@@ -131,7 +131,7 @@ class StoreV2Tests(unittest.TestCase):
         self.store.set_item_themes(item["id"], ["世界观设定", "科幻/赛博朋克"], typ="world")
         self.store.set_item_tags(
             item["id"],
-            [{"bucket": "genre", "name": "强强", "source": "user"}, {"bucket": "purpose", "name": "世界观设定"}],
+            [{"bucket": "relation", "name": "强强", "source": "user"}, {"bucket": "world", "name": "现代"}],
             replace_buckets=["*"],
         )
         card, _ = self.store.add_file(b'{"spec":"chara_card_v2"}', type="character", subtype=None, title="角色A", original_filename="a.json")
@@ -140,7 +140,7 @@ class StoreV2Tests(unittest.TestCase):
         self.assertTrue(any(x["id"] == item["id"] for x in found))
         by_theme = self.store.list_items(theme="科幻", enrich=True)
         self.assertTrue(any(x["id"] == item["id"] for x in by_theme))
-        by_tag = self.store.list_items(tag="强强", bucket="genre", enrich=True)
+        by_tag = self.store.list_items(tag="强强", bucket="relation", enrich=True)
         self.assertTrue(any(x["id"] == item["id"] for x in by_tag))
         enriched = self.store.get_enriched(item["id"])
         self.assertTrue(any(l["kind"] == "character_worldbook" for l in enriched["links"]))
@@ -165,28 +165,28 @@ class StoreV2Tests(unittest.TestCase):
 
     def test_user_tag_clears_pending_and_blacklist_blocks(self):
         item, _ = self.store.add_file(b"z", type="other", subtype=None, title="z", original_filename="z.txt")
-        self.store.set_item_tags(item["id"], [{"bucket": "genre", "name": "新造标签", "source": "ai"}], replace_buckets=["genre"])
-        tags = self.store.list_tags("genre", include_blacklisted=True)
+        self.store.set_item_tags(item["id"], [{"bucket": "plot", "name": "新造标签", "source": "ai"}], replace_buckets=["plot"])
+        tags = self.store.list_tags("plot", include_blacklisted=True)
         created = next(t for t in tags if t["name"] == "新造标签")
         self.assertTrue(created["pending"])
-        self.store.set_item_tags(item["id"], [{"bucket": "genre", "name": "新造标签", "source": "user"}], replace_buckets=["genre"])
-        created = next(t for t in self.store.list_tags("genre") if t["name"] == "新造标签")
+        self.store.set_item_tags(item["id"], [{"bucket": "plot", "name": "新造标签", "source": "user"}], replace_buckets=["plot"])
+        created = next(t for t in self.store.list_tags("plot") if t["name"] == "新造标签")
         self.assertFalse(created["pending"])
         self.store.set_tag_flags(created["id"], blacklisted=True)
-        self.store.set_item_tags(item["id"], [{"bucket": "genre", "name": "新造标签", "source": "user"}], replace_buckets=["genre"])
+        self.store.set_item_tags(item["id"], [{"bucket": "plot", "name": "新造标签", "source": "user"}], replace_buckets=["plot"])
         enriched = self.store.get_enriched(item["id"])
         self.assertFalse(any(t["name"] == "新造标签" for t in enriched["tags"]))
 
     def test_merge_tags(self):
-        a = self.store.ensure_tag("genre", "青梅")
-        b = self.store.ensure_tag("genre", "青梅竹马")
+        a = self.store.ensure_tag("plot", "自定义甲")
+        b = self.store.ensure_tag("plot", "自定义乙")
         item, _ = self.store.add_file(b"m", type="other", subtype=None, title="m", original_filename="m.txt")
-        self.store.set_item_tags(item["id"], [{"bucket": "genre", "name": "青梅", "source": "user"}], replace_buckets=["genre"])
+        self.store.set_item_tags(item["id"], [{"bucket": "plot", "name": "自定义甲", "source": "user"}], replace_buckets=["plot"])
         self.store.merge_tags(b["id"], a["id"])
         enriched = self.store.get_enriched(item["id"])
         names = [t["name"] for t in enriched["tags"]]
-        self.assertIn("青梅竹马", names)
-        self.assertNotIn("青梅", names)
+        self.assertIn("自定义乙", names)
+        self.assertNotIn("自定义甲", names)
 
     def test_bundle_and_metadata_patch(self):
         a, _ = self.store.add_file(b"ba", type="character", subtype=None, title="卡", original_filename="a.json")
@@ -202,7 +202,7 @@ class StoreV2Tests(unittest.TestCase):
                 "license_repost": "allowed",
                 "recommended_models": "Claude, GPT",
                 "themes": ["现代"],
-                "tags": [{"bucket": "genre", "name": "青梅竹马"}],
+                "tags": [{"bucket": "relation", "name": "青梅竹马"}],
                 "review_status": "confirmed",
             },
         )
@@ -254,7 +254,7 @@ class FormatTests(unittest.TestCase):
             "review_status": "pending",
             "license_repost": "allowed",
             "themes": ["现代"],
-            "tags": [{"bucket": "genre", "name": "青梅竹马"}],
+            "tags": [{"bucket": "relation", "name": "青梅竹马"}],
             "recommended_models": ["X"],
         }
         body = format_thread_body(item)

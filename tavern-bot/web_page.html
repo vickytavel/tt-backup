@@ -182,7 +182,8 @@
       ["license_tavern", "酒馆使用"],
       ["license_phone", "小手机使用"],
     ];
-    const BUCKET_LABEL = { genre: "题材", world: "世界观", license: "许可", recommend: "推荐", basic: "基础信息", purpose: "用途" };
+    let BUCKET_LABEL = {};
+    let SCOPE_LABEL = {};
     const LINK_LABEL = {
       character_worldbook: "角色卡 ↔ 世界书",
       worldbook_extra: "世界书 ↔ 番外",
@@ -268,6 +269,8 @@
       const bucketSel = document.getElementById("bucket");
       const current = bucketSel.value;
       bucketSel.innerHTML = '<option value="">全部标签类别</option>';
+      BUCKET_LABEL = Object.fromEntries((taxonomy.buckets || []).map((b) => [b.id, b.label]));
+      SCOPE_LABEL = Object.fromEntries((taxonomy.scopes || []).map((s) => [s.id, s.label]));
       (taxonomy.buckets || []).forEach((b) => {
         const opt = document.createElement("option");
         opt.value = b.id; opt.textContent = b.label;
@@ -377,7 +380,8 @@
     }
     function tagChips(it) {
       return (it.tags || []).map((t) => {
-        const lab = (BUCKET_LABEL[t.bucket] || t.bucket) + ":" + t.name;
+        const lab = (BUCKET_LABEL[t.bucket] || t.bucket) + ":" + t.name
+          + (t.scope && t.scope !== "卡片" ? "（" + (SCOPE_LABEL[t.scope] || t.scope) + "）" : "");
         const cls = t.pending ? "mini-chip pending" : "mini-chip";
         return `<span class="${cls}">${escapeHtml(lab)}</span>`;
       }).join("");
@@ -519,7 +523,7 @@
       const msg = document.getElementById("detail-msg");
       const tags = document.getElementById("e-tags").value.split(/\n+/).map((line) => line.trim()).filter(Boolean).map((line) => {
         const idx = line.indexOf(":");
-        if (idx === -1) return { bucket: "genre", name: line };
+        if (idx === -1) return { bucket: "plot", name: line };
         return { bucket: line.slice(0, idx).trim(), name: line.slice(idx + 1).trim() };
       });
       const payload = {

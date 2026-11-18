@@ -329,20 +329,23 @@ class TavernBot(discord.Client):
         except discord.HTTPException:
             LOG.warning("Could not sync forum tags for thread")
 
-    def _ingest_attachments(self, message: discord.Message) -> list[discord.Attachment]:
+    def _snapshot_attachments(self, message: discord.Message) -> list[discord.Attachment]:
+        found: list[discord.Attachment] = []
+        for snap in getattr(message, "message_snapshots", None) or []:
+            found.extend(list(getattr(snap, "attachments", None) or []))
+        return found
+
+    def _own_attachments(self, message: discord.Message) -> list[discord.Attachment]:
+        """Attachments the user uploaded here, excluding anything that came from a forward."""
+        snap_ids = {str(a.id) for a in self._snapshot_attachments(message) if getattr(a, "id", None)}
         found: list[discord.Attachment] = []
         seen: set[str] = set()
-        snapshots = list(getattr(message, "message_snapshots", None) or [])
-        groups: list[list[discord.Attachment]] = [list(message.attachments or [])]
-        for snap in snapshots:
-            groups.append(list(getattr(snap, "attachments", None) or []))
-        for group in groups:
-            for att in group:
-                key = (getattr(att, "id", None) and str(att.id)) or (att.url or att.filename or "")
-                if not key or key in seen:
-                    continue
-                seen.add(key)
-                found.append(att)
+        for att in message.attachments or []:
+            key = str(getattr(att, "id", None) or att.url or att.filename or "")
+            if not key or key in seen or key in snap_ids:
+                continue
+            seen.add(key)
+            found.append(att)
         return found
 
     def _ingest_note(self, message: discord.Message) -> str:
@@ -365,17 +368,83 @@ class TavernBot(discord.Client):
             return True
         return _forum_channel_of(message) is not None
 
+    async def _remember_intro(self, message: discord.Message, *, author: str, text: str) -> None:
+        """Store a forwarded author blurb so the card can pick it up later."""
+        assets = [
+            {"filename": a.filename or "", "url": a.url or a.proxy_url or ""}
+            for a in self._snapshot_attachments(message)
+        ]
+        guild = message.guild
+        try:
+            self.store.save_intro(
+                message_id=str(message.id),
+                guild_id=str(guild.id) if guild else "",
+                channel_id=str(getattr(message.channel, "id", "") or ""),
+                author=author,
+                text=text,
+                assets=assets,
+                jump_url=message.jump_url,
+            )
+        except Exception:
+            LOG.exception("Failed to remember intro %s", message.id)
+            return
+        try:
+            await message.reply(
+                f"简介已记录，{len(assets)} 张配图一并存档。拿到角色卡后回复这条消息上传，就会挂到这篇简介上。",
+                mention_author=False,
+            )
+        except discord.HTTPException:
+            pass
+
+    def _resolve_intro(self, message: discord.Message) -> dict | None:
+        """Return the blurb this message is replying to, if any."""
+        ref = message.reference
+        if ref is None:
+            return None
+        resolved = getattr(ref, "resolved", None)
+        message_id = getattr(ref, "message_id", None)
+        if not message_id and isinstance(resolved, discord.Message):
+            message_id = resolved.id
+        if not message_id:
+            return None
+        stored = self.store.get_intro(str(message_id))
+        if stored:
+            return stored
+        if isinstance(resolved, discord.Message):
+            text = self._ingest_note(resolved)
+            if text:
+                return {
+                    "message_id": str(message_id),
+                    "text": text,
+                    "jump_url": resolved.jump_url,
+                    "assets": [],
+                }
+        return None
+
     async def on_message(self, message: discord.Message) -> None:
         if message.author.bot:
             return
-        attachments = self._ingest_attachments(message)
-        if not attachments:
+
+        own = self._own_attachments(message)
+        caption = self._ingest_note(message)
+        if not own:
+            # A forwarded blurb has no uploads of its own: remember it and wait for the card.
+            if caption or self._snapshot_attachments(message):
+                guild = message.guild
+                if guild is not None:
+                    configured = self.configured_guild()
+                    if configured is None or guild.id != configured.id:
+                        return
+                if await self.is_allowed(message.author, in_guild=guild):
+                    author = f"{message.author.display_name} ({message.author.id})"
+                    await self._remember_intro(message, author=author, text=caption)
+                return
             if self._is_direct_request(message):
                 LOG.info("Received a message with no file (forward snapshots=%s)",
                          len(getattr(message, "message_snapshots", None) or []))
                 try:
                     await message.reply(
-                        "我没有读到文件。请直接上传附件，或转发一条带文件的消息（不要只转发纯文字）。",
+                        "我没有读到文件。请直接上传附件，或转发一条带文件的简介。",
                         mention_author=False,
                     )
                 except discord.HTTPException:
@@ -402,7 +471,12 @@ class TavernBot(discord.Client):
 
         results: list[str] = []
         ingested_ids: list[int] = []
-        note = self._ingest_note(message)
+        intro = self._resolve_intro(message)
+        intro_id = str((intro or {}).get("message_id") or "")
+        note = caption
+        intro_text = (intro or {}).get("text") or ""
+        if intro_text and intro_text not in note:
+            note = (note + "\n\n" + intro_text).strip()
         author = f"{message.author.display_name} ({message.author.id})"
         channel_name = ""
         if guild is not None and not isinstance(message.channel, discord.DMChannel):
@@ -412,10 +486,15 @@ class TavernBot(discord.Client):
             else:
                 channel_name = getattr(message.channel, "name", "") or ""
 
-        LOG.info("Ingesting %s file(s) from %s", len(attachments), author)
-        for attachment in attachments:
+        LOG.info("Ingesting %s upload(s) from %s (intro=%s)", len(own), author, bool(intro_id))
+        for attachment in own:
             line, item_id = await self._handle_attachment(
-                message, attachment, note=note, author=author, channel_name=channel_name
+                message,
+                attachment,
+                note=note,
+                author=author,
+                channel_name=channel_name,
+                intro_id=intro_id,
             )
             results.append(line)
             if item_id:
@@ -427,12 +506,14 @@ class TavernBot(discord.Client):
             except Exception:
                 LOG.exception("Failed to bind bundle for a multi-file message")
 
-        text = "\n".join(results) if results else "没有可入库的附件。"
+        reply = "\n".join(results) if results else "没有可入库的附件。"
+        if intro_id and ingested_ids:
+            reply += "\n（已关联你回复的那篇简介。）"
         try:
-            await message.reply(text, mention_author=False)
+            await message.reply(reply, mention_author=False)
         except discord.HTTPException:
             try:
-                await message.channel.send(text)
+                await message.channel.send(reply)
             except discord.HTTPException:
                 LOG.exception("Failed to send ingest reply")
 
@@ -444,6 +525,7 @@ class TavernBot(discord.Client):
         note: str,
         author: str,
         channel_name: str,
+        intro_id: str = "",
     ) -> tuple[str, int | None]:
         filename = attachment.filename or "unnamed"
         if attachment.size and attachment.size > MAX_ATTACHMENT_BYTES:
@@ -458,6 +540,8 @@ class TavernBot(discord.Client):
             return f"「{filename}」太大，已跳过。", None
 
         result = classify(data, filename=filename, hint=note, channel_name=channel_name)
+        if result.type == "other" and result.reason.endswith("-no-chara"):
+            return f"「{filename}」没有角色卡数据，已跳过。", None
         title = result.title or Path(filename).stem or "未命名"
         catalog_only = result.type in CATALOG_ONLY_TYPES
         thumb = ""
@@ -492,6 +576,11 @@ class TavernBot(discord.Client):
             discord=discord_meta,
         )
         item_id = int(item["id"])
+        if intro_id:
+            try:
+                self.store.update_fields(item_id, source_intro_id=intro_id)
+            except Exception:
+                LOG.exception("Failed to link item %s to intro %s", item_id, intro_id)
 
         jump = item.get("discord_jump_url") or ""
         existing_thread = bool(item.get("discord_thread_id")) and not created
@@ -840,7 +929,7 @@ class TavernBot(discord.Client):
             elif extra.startswith("tag:"):
                 section = extra
             elif extra == "basic":
-                section = "tag:basic"
+                section = "tag:character"
             elif extra == "licnote":
                 section = "license"
             elif extra.startswith("link") or extra.startswith("linkadd") or extra == "linkdel":

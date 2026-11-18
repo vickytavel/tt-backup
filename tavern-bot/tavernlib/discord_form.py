@@ -160,7 +160,7 @@ def tag_bucket_view(item_id: int, bucket: str, choices: list[dict[str, Any]], se
     )
     view.add_item(select)
     view.add_item(_btn("自定义标签", cid("modal", item_id, f"tag:{bucket}")))
-    if bucket == "basic":
+    if bucket == "character":
         view.add_item(_btn("填写年龄/称呼", cid("modal", item_id, "basic")))
     view.add_item(_btn("返回标签类别", cid("sec", item_id, "tags")))
     _back_and_home(view, item_id)
@@ -411,14 +411,14 @@ def apply_modal(store: LibraryStore, item: dict[str, Any], kind: str, values: di
         store.set_item_tags(item_id, assignments, replace_buckets=[bucket], source="user")
         return store.get_enriched(item_id)
     if kind == "basic":
-        assignments = [{"bucket": "basic", "name": t["name"], "source": "user"} for t in (item.get("tags") or []) if t.get("bucket") == "basic"]
+        assignments = [{"bucket": "character", "name": t["name"], "source": "user"} for t in (item.get("tags") or []) if t.get("bucket") == "character"]
         # Replace previous 年龄/性别/称呼 entries if new values are provided.
         def upsert(prefix: str, raw: str) -> None:
             raw = (raw or "").strip()
             assignments[:] = [a for a in assignments if not a["name"].startswith(prefix) and a["name"] not in {raw}]
             if raw:
                 name = raw if prefix == "" else f"{prefix}{raw}"
-                assignments.append({"bucket": "basic", "name": normalize_tag_name(name), "source": "user"})
+                assignments.append({"bucket": "character", "name": normalize_tag_name(name), "source": "user"})
 
         if values.get("age"):
             upsert("年龄:", values["age"])
@@ -428,7 +428,7 @@ def apply_modal(store: LibraryStore, item: dict[str, Any], kind: str, values: di
             upsert("", g if g in {"男", "女", "非二元", "成年"} else f"性别:{g}")
         if values.get("address"):
             upsert("称呼:", values["address"])
-        store.set_item_tags(item_id, assignments, replace_buckets=["basic"], source="user")
+        store.set_item_tags(item_id, assignments, replace_buckets=["character"], source="user")
         return store.get_enriched(item_id)
     if kind == "licnote":
         store.update_fields(item_id, license_note=values.get("license_note") or "")

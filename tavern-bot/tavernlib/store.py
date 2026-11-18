@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import logging
 import os
 import shutil
 import sqlite3
@@ -14,6 +15,7 @@ from pathlib import Path
 from typing import Any, Iterator
 
 from .fragments import extract_fragments
+from .pieces import extract_from_bytes
 from .paths import CATALOG_ONLY_TYPES, IMPORTABLE_TYPES, LIBRARY_ROOT, TYPE_FOLDERS
 from .taxonomy import (
     BUCKET_IDS,
@@ -23,14 +25,17 @@ from .taxonomy import (
     REVIEW_CONFIRMED,
     REVIEW_PENDING,
     SCHEMA_VERSION,
-    SEED_TAGS,
+    SCOPE_LABELS,
     TAG_BUCKETS,
+    TAGLIB,
     THEME_SEEDS,
     dump_list_field,
+    is_deprecated,
     load_list_field,
     normalize_tag_name,
     normalize_theme_path,
     parse_list_field,
+    resolve_tag,
     valid_bucket,
     valid_license,
     valid_link_kind,
@@ -86,7 +91,27 @@ ITEM_NEW_COLUMNS: list[tuple[str, str]] = [
     ("ai_prefill", "TEXT"),
     ("needs_refile", "INTEGER NOT NULL DEFAULT 0"),
     ("discord_form_message_id", "TEXT"),
+    ("source_intro_id", "TEXT"),
 ]
+
+TAG_NEW_COLUMNS: list[tuple[str, str]] = [
+    ("tag_id", "TEXT"),
+    ("scope", "TEXT"),
+    ("aliases", "TEXT"),
+    ("definition", "TEXT"),
+    ("negative", "TEXT"),
+    ("precondition", "TEXT"),
+    ("filterable", "TEXT"),
+]
+
+# v2.1 six-bucket taxonomy -> v2.2 axes. Names that exist in the vocabulary are
+# re-filed by `_seed_vocabulary`; this only rescues leftovers.
+LEGACY_BUCKET_MAP = {
+    "genre": "plot",
+    "purpose": "gameplay",
+    "basic": "character",
+    "recommend": "plot",
+}
 
 NEW_TABLES = """
 CREATE TABLE IF NOT EXISTS schema_meta (
@@ -100,6 +125,13 @@ CREATE TABLE IF NOT EXISTS tags (
     locked INTEGER NOT NULL DEFAULT 0,
     blacklisted INTEGER NOT NULL DEFAULT 0,
     pending INTEGER NOT NULL DEFAULT 0,
+    tag_id TEXT,
+    scope TEXT,
+    aliases TEXT,
+    definition TEXT,
+    negative TEXT,
+    precondition TEXT,
+    filterable TEXT,
     UNIQUE(bucket, name)
 );
 CREATE INDEX IF NOT EXISTS idx_tags_bucket ON tags(bucket, name);
@@ -139,11 +171,42 @@ CREATE TABLE IF NOT EXISTS fragments (
     source_ref TEXT
 );
 CREATE INDEX IF NOT EXISTS idx_fragments_item ON fragments(item_id);
+CREATE TABLE IF NOT EXISTS pieces (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    item_id INTEGER NOT NULL REFERENCES items(id) ON DELETE CASCADE,
+    kind TEXT NOT NULL,
+    ord INTEGER NOT NULL DEFAULT 0,
+    title TEXT NOT NULL DEFAULT '',
+    text TEXT NOT NULL DEFAULT '',
+    meta TEXT NOT NULL DEFAULT '{}',
+    source_ref TEXT NOT NULL DEFAULT '',
+    created_at TEXT
+);
+CREATE INDEX IF NOT EXISTS idx_pieces_item ON pieces(item_id, kind, ord);
+CREATE INDEX IF NOT EXISTS idx_pieces_kind ON pieces(kind);
+CREATE TABLE IF NOT EXISTS piece_tags (
+    piece_id INTEGER NOT NULL REFERENCES pieces(id) ON DELETE CASCADE,
+    tag_id INTEGER NOT NULL REFERENCES tags(id) ON DELETE CASCADE,
+    source TEXT NOT NULL DEFAULT 'user',
+    PRIMARY KEY (piece_id, tag_id)
+);
+CREATE INDEX IF NOT EXISTS idx_piece_tags_tag ON piece_tags(tag_id);
 CREATE INDEX IF NOT EXISTS idx_items_review ON items(review_status);
 CREATE INDEX IF NOT EXISTS idx_items_bundle ON items(bundle_id);
+CREATE TABLE IF NOT EXISTS intros (
+    message_id TEXT PRIMARY KEY,
+    guild_id TEXT,
+    channel_id TEXT,
+    author TEXT,
+    text TEXT,
+    assets TEXT,
+    jump_url TEXT,
+    created_at TEXT NOT NULL
+);
 """
 
 _WRITE_LOCK = threading.Lock()
+LOG = logging.getLogger(__name__)
 
 
 def utcnow_iso() -> str:
@@ -223,14 +286,58 @@ class LibraryStore:
             if name not in existing:
                 conn.execute(f"ALTER TABLE items ADD COLUMN {name} {decl}")
         conn.executescript(NEW_TABLES)
+        tag_columns = {row[1] for row in conn.execute("PRAGMA table_info(tags)").fetchall()}
+        for name, decl in TAG_NEW_COLUMNS:
+            if name not in tag_columns:
+                conn.execute(f"ALTER TABLE tags ADD COLUMN {name} {decl}")
         current = conn.execute("SELECT value FROM schema_meta WHERE key = 'version'").fetchone()
         version = int(current["value"]) if current and str(current["value"]).isdigit() else 1
+        if version < 5:
+            self._backfill_pieces(conn)
         if version < SCHEMA_VERSION:
+            for old, new in LEGACY_BUCKET_MAP.items():
+                conn.execute("UPDATE tags SET bucket = ? WHERE bucket = ?", (new, old))
             conn.execute(
                 "INSERT INTO schema_meta(key, value) VALUES('version', ?) "
                 "ON CONFLICT(key) DO UPDATE SET value = excluded.value",
                 (str(SCHEMA_VERSION),),
             )
+
+    def _backfill_pieces(self, conn: sqlite3.Connection) -> None:
+        """One-off: split existing files into pieces. Safe to re-run (replaces)."""
+        rows = conn.execute(
+            "SELECT id, type, stored_path FROM items WHERE type IN ('character','world','preset','style')"
+        ).fetchall()
+        for row in rows:
+            try:
+                data = self.abspath(row["stored_path"]).read_bytes()
+            except (OSError, ValueError):
+                continue
+            self._write_pieces(conn, int(row["id"]), extract_from_bytes(data, row["type"]))
+
+    @staticmethod
+    def _write_pieces(conn: sqlite3.Connection, item_id: int, pieces: list[dict[str, Any]]) -> None:
+        conn.execute("DELETE FROM pieces WHERE item_id = ?", (item_id,))
+        if not pieces:
+            return
+        now = utcnow_iso()
+        conn.executemany(
+            "INSERT INTO pieces(item_id, kind, ord, title, text, meta, source_ref, created_at) "
+            "VALUES(?, ?, ?, ?, ?, ?, ?, ?)",
+            [
+                (
+                    item_id,
+                    piece.get("kind") or "body",
+                    int(piece.get("ord") or 0),
+                    str(piece.get("title") or "")[:120],
+                    str(piece.get("text") or ""),
+                    json.dumps(piece.get("meta") or {}, ensure_ascii=False),
+                    str(piece.get("source_ref") or ""),
+                    now,
+                )
+                for piece in pieces
+            ],
+        )
 
     def _seed(self, conn: sqlite3.Connection) -> None:
         for typ, paths in THEME_SEEDS.items():
@@ -239,12 +346,56 @@ class LibraryStore:
                     "INSERT OR IGNORE INTO theme_categories(type, path) VALUES(?, ?)",
                     (typ, path),
                 )
-        for bucket, names in SEED_TAGS.items():
-            for name in names:
-                conn.execute(
-                    "INSERT OR IGNORE INTO tags(bucket, name, locked, blacklisted, pending) VALUES(?, ?, 0, 0, 0)",
-                    (bucket, name),
+        self._seed_vocabulary(conn)
+
+    @staticmethod
+    def _seed_vocabulary(conn: sqlite3.Connection) -> None:
+        """Upsert the controlled vocabulary by name so existing rows get their IDs."""
+        conn.execute("BEGIN IMMEDIATE")
+        try:
+            for tag in TAGLIB["tags"]:
+                name = tag["name"]
+                payload = (
+                    tag["axis"],
+                    tag.get("scope") or "",
+                    json.dumps(tag.get("aliases") or [], ensure_ascii=False),
+                    tag.get("definition") or "",
+                    tag.get("negative") or "",
+                    tag.get("precondition") or "",
+                    tag.get("filterable") or "",
+                    tag["id"],
                 )
+                rows = conn.execute(
+                    "SELECT id FROM tags WHERE name = ? ORDER BY id", (name,)
+                ).fetchall()
+                if rows:
+                    keep_id = int(rows[0]["id"])
+                    conn.execute(
+                        "UPDATE tags SET bucket = ?, scope = ?, aliases = ?, definition = ?, "
+                        "negative = ?, precondition = ?, filterable = ?, tag_id = ?, locked = 1, pending = 0 "
+                        "WHERE id = ?",
+                        (*payload, keep_id),
+                    )
+                    for extra in rows[1:]:
+                        drop_id = int(extra["id"])
+                        conn.execute(
+                            "INSERT OR IGNORE INTO item_tags(item_id, tag_id, source) "
+                            "SELECT item_id, ?, source FROM item_tags WHERE tag_id = ?",
+                            (keep_id, drop_id),
+                        )
+                        conn.execute("DELETE FROM item_tags WHERE tag_id = ?", (drop_id,))
+                        conn.execute("DELETE FROM tags WHERE id = ?", (drop_id,))
+                else:
+                    conn.execute(
+                        "INSERT INTO tags(bucket, name, scope, aliases, definition, negative, "
+                        "precondition, filterable, tag_id, locked, blacklisted, pending) "
+                        "VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?, 1, 0, 0)",
+                        (payload[0], name, *payload[1:]),
+                    )
+            conn.execute("COMMIT")
+        except Exception:
+            conn.execute("ROLLBACK")
+            raise
 
     @contextmanager
     def _connect(self) -> Iterator[sqlite3.Connection]:
@@ -267,6 +418,59 @@ class LibraryStore:
             row = conn.execute("SELECT * FROM items WHERE id = ?", (item_id,)).fetchone()
         return _row_to_dict(row)
 
+    def save_intro(
+        self,
+        *,
+        message_id: str,
+        guild_id: str = "",
+        channel_id: str = "",
+        author: str = "",
+        text: str = "",
+        assets: list[dict[str, str]] | None = None,
+        jump_url: str = "",
+    ) -> None:
+        """Remember a forwarded author blurb until its character card arrives."""
+        keep = [a for a in (assets or []) if isinstance(a, dict)]
+        with self._connect() as conn:
+            conn.execute(
+                """
+                INSERT INTO intros(message_id, guild_id, channel_id, author, text, assets, jump_url, created_at)
+                VALUES(?, ?, ?, ?, ?, ?, ?, ?)
+                ON CONFLICT(message_id) DO UPDATE SET
+                    guild_id = excluded.guild_id,
+                    channel_id = excluded.channel_id,
+                    author = excluded.author,
+                    text = excluded.text,
+                    assets = excluded.assets,
+                    jump_url = excluded.jump_url
+                """,
+                (
+                    str(message_id),
+                    guild_id,
+                    channel_id,
+                    author,
+                    text,
+                    json.dumps(keep, ensure_ascii=False),
+                    jump_url,
+                    utcnow_iso(),
+                ),
+            )
+
+    def get_intro(self, message_id: str) -> dict[str, Any] | None:
+        key = str(message_id or "").strip()
+        if not key:
+            return None
+        with self._connect() as conn:
+            row = conn.execute("SELECT * FROM intros WHERE message_id = ?", (key,)).fetchone()
+        out = _row_to_dict(row)
+        if out is None:
+            return None
+        try:
+            out["assets"] = json.loads(out.get("assets") or "[]")
+        except ValueError:
+            out["assets"] = []
+        return out
+
     def enrich(self, item: dict[str, Any] | None) -> dict[str, Any] | None:
         if not item:
             return None
@@ -276,7 +480,8 @@ class LibraryStore:
                 dict(r)
                 for r in conn.execute(
                     """
-                    SELECT t.id, t.bucket, t.name, t.locked, t.blacklisted, t.pending, it.source
+                    SELECT t.id, t.bucket, t.name, t.tag_id, t.scope, t.locked,
+                           t.blacklisted, t.pending, it.source
                     FROM item_tags it JOIN tags t ON t.id = it.tag_id
                     WHERE it.item_id = ?
                     ORDER BY t.bucket, t.name
@@ -298,6 +503,32 @@ class LibraryStore:
                     (item_id,),
                 )
             ]
+            pieces = [
+                dict(r)
+                for r in conn.execute(
+                    "SELECT id, kind, ord, title, source_ref, meta, length(text) AS chars "
+                    "FROM pieces WHERE item_id = ? ORDER BY kind, ord, id",
+                    (item_id,),
+                )
+            ]
+            if pieces:
+                marks = ",".join("?" * len(pieces))
+                grouped: dict[int, list[dict[str, Any]]] = {}
+                for row in conn.execute(
+                    "SELECT pt.piece_id, t.id, t.bucket, t.name, pt.source "
+                    "FROM piece_tags pt JOIN tags t ON t.id = pt.tag_id "
+                    f"WHERE pt.piece_id IN ({marks}) ORDER BY t.bucket, t.name",
+                    [p["id"] for p in pieces],
+                ):
+                    grouped.setdefault(int(row["piece_id"]), []).append(
+                        {"id": row["id"], "bucket": row["bucket"], "name": row["name"], "source": row["source"]}
+                    )
+                for piece in pieces:
+                    try:
+                        piece["meta"] = json.loads(piece.get("meta") or "{}")
+                    except (ValueError, TypeError):
+                        piece["meta"] = {}
+                    piece["tags"] = grouped.get(int(piece["id"]), [])
             links = [self._link_row(conn, r) for r in conn.execute(
                 """
                 SELECT * FROM item_links
@@ -320,6 +551,7 @@ class LibraryStore:
         out["tags"] = tags
         out["themes"] = themes
         out["fragments"] = fragments
+        out["pieces"] = pieces
         out["links"] = links
         out["importable"] = self.is_importable(out)
         try:
@@ -403,15 +635,17 @@ class LibraryStore:
             joins.append("LEFT JOIN item_tags itq ON itq.item_id = items.id LEFT JOIN tags tgq ON tgq.id = itq.tag_id")
             joins.append("LEFT JOIN item_themes thq ON thq.item_id = items.id")
             joins.append("LEFT JOIN fragments fq ON fq.item_id = items.id")
+            joins.append("LEFT JOIN pieces pq ON pq.item_id = items.id")
             clauses.append(
                 "("
                 "items.title LIKE ? OR items.original_filename LIKE ? OR IFNULL(items.note, '') LIKE ? "
                 "OR IFNULL(items.author, '') LIKE ? OR IFNULL(items.summary, '') LIKE ? "
                 "OR IFNULL(items.source_url, '') LIKE ? OR IFNULL(tgq.name, '') LIKE ? "
-                "OR IFNULL(thq.path, '') LIKE ? OR IFNULL(fq.excerpt, '') LIKE ? OR IFNULL(fq.title, '') LIKE ?"
+                "OR IFNULL(thq.path, '') LIKE ? OR IFNULL(fq.excerpt, '') LIKE ? OR IFNULL(fq.title, '') LIKE ? "
+                "OR IFNULL(pq.text, '') LIKE ? OR IFNULL(pq.title, '') LIKE ?"
                 ")"
             )
-            params.extend([like] * 10)
+            params.extend([like] * 12)
         if joins:
             sql += " " + " ".join(joins)
         if clauses:
@@ -573,6 +807,11 @@ class LibraryStore:
                 self.replace_fragments(item_id, extract_fragments(data, typ))
             except Exception:
                 pass
+            try:
+                with self._connect() as conn:
+                    self._write_pieces(conn, item_id, extract_from_bytes(data, typ))
+            except Exception:
+                LOG.exception("extract pieces failed for item %s", item_id)
         item = self.get(item_id)
         assert item is not None
         return item, True
@@ -840,9 +1079,16 @@ class LibraryStore:
         source: str = "user",
         locked: bool = False,
     ) -> dict[str, Any] | None:
-        bucket = valid_bucket(bucket) or ""
         name = normalize_tag_name(name)
-        if not bucket or not name:
+        if not name or is_deprecated(name):
+            return None
+        record = resolve_tag(name)
+        if record:
+            bucket = record["axis"]
+            name = record["name"]
+        else:
+            bucket = valid_bucket(bucket) or ""
+        if not bucket:
             return None
         with self._connect() as conn:
             row = conn.execute(
@@ -853,12 +1099,42 @@ class LibraryStore:
                 tag = dict(row)
                 if tag.get("blacklisted"):
                     return tag
+                if record and not tag.get("tag_id"):
+                    conn.execute(
+                        "UPDATE tags SET tag_id = ?, scope = ?, aliases = ?, definition = ?, "
+                        "negative = ?, precondition = ?, filterable = ?, pending = 0 WHERE id = ?",
+                        (
+                            record["id"],
+                            record.get("scope") or "",
+                            json.dumps(record.get("aliases") or [], ensure_ascii=False),
+                            record.get("definition") or "",
+                            record.get("negative") or "",
+                            record.get("precondition") or "",
+                            record.get("filterable") or "",
+                            tag["id"],
+                        ),
+                    )
+                    tag = dict(conn.execute("SELECT * FROM tags WHERE id = ?", (tag["id"],)).fetchone())
                 return tag
             # Unknown tags from AI/heuristics stay 待确认; user-created tags do not.
             is_pending = 1 if (pending or source in {"ai", "heuristic"}) else 0
             conn.execute(
-                "INSERT INTO tags(bucket, name, locked, blacklisted, pending) VALUES(?, ?, ?, 0, ?)",
-                (bucket, name, 1 if locked else 0, is_pending),
+                "INSERT INTO tags(bucket, name, locked, blacklisted, pending, tag_id, scope, "
+                "aliases, definition, negative, precondition, filterable) "
+                "VALUES(?, ?, ?, 0, ?, ?, ?, ?, ?, ?, ?, ?)",
+                (
+                    bucket,
+                    name,
+                    1 if (locked or record) else 0,
+                    is_pending if not record else 0,
+                    record["id"] if record else None,
+                    (record.get("scope") or "") if record else None,
+                    json.dumps(record.get("aliases") or [], ensure_ascii=False) if record else None,
+                    (record.get("definition") or "") if record else None,
+                    (record.get("negative") or "") if record else None,
+                    (record.get("precondition") or "") if record else None,
+                    (record.get("filterable") or "") if record else None,
+                ),
             )
             row = conn.execute(
                 "SELECT * FROM tags WHERE bucket = ? AND name = ?",
@@ -1047,9 +1323,206 @@ class LibraryStore:
                     ),
                 )
 
+    # --- pieces: body / greeting / world entry / preset block ---------------
+
+    def pieces(self, item_id: int, *, with_text: bool = False, kind: str | None = None) -> list[dict[str, Any]]:
+        """Pieces of one item, ordered by kind then original order."""
+        columns = "id, kind, ord, title, source_ref, meta, length(text) AS chars"
+        if with_text:
+            columns += ", text"
+        sql = f"SELECT {columns} FROM pieces WHERE item_id = ?"
+        params: list[Any] = [item_id]
+        if kind:
+            sql += " AND kind = ?"
+            params.append(kind)
+        sql += " ORDER BY kind, ord, id"
+        with self._connect() as conn:
+            rows = [dict(r) for r in conn.execute(sql, params)]
+            if not rows:
+                return []
+            marks = ",".join("?" * len(rows))
+            grouped: dict[int, list[dict[str, Any]]] = {}
+            for tag in conn.execute(
+                "SELECT pt.piece_id, t.id, t.bucket, t.name, pt.source "
+                "FROM piece_tags pt JOIN tags t ON t.id = pt.tag_id "
+                f"WHERE pt.piece_id IN ({marks}) ORDER BY t.bucket, t.name",
+                [r["id"] for r in rows],
+            ):
+                grouped.setdefault(int(tag["piece_id"]), []).append(
+                    {"id": tag["id"], "bucket": tag["bucket"], "name": tag["name"], "source": tag["source"]}
+                )
+        for row in rows:
+            try:
+                row["meta"] = json.loads(row.get("meta") or "{}")
+            except (ValueError, TypeError):
+                row["meta"] = {}
+            row["tags"] = grouped.get(int(row["id"]), [])
+        return rows
+
+    def piece(self, piece_id: int) -> dict[str, Any] | None:
+        with self._connect() as conn:
+            row = conn.execute("SELECT * FROM pieces WHERE id = ?", (piece_id,)).fetchone()
+        if row is None:
+            return None
+        data = dict(row)
+        try:
+            data["meta"] = json.loads(data.get("meta") or "{}")
+        except (ValueError, TypeError):
+            data["meta"] = {}
+        data["tags"] = self.piece_tags(piece_id)
+        return data
+
+    def replace_pieces(self, item_id: int, pieces: list[dict[str, Any]]) -> None:
+        with self._connect() as conn:
+            self._write_pieces(conn, item_id, pieces)
+
+    def extract_pieces(self, item_id: int) -> int:
+        """Re-read the stored file and rebuild its pieces. Returns piece count."""
+        item = self.get(item_id)
+        if not item or not item.get("stored_path"):
+            return 0
+        try:
+            data = self.abspath(item["stored_path"]).read_bytes()
+        except (OSError, ValueError):
+            return 0
+        pieces = extract_from_bytes(data, item.get("type") or "")
+        self.replace_pieces(item_id, pieces)
+        return len(pieces)
+
+    def search_pieces(
+        self,
+        query: str,
+        *,
+        kind: str | None = None,
+        limit: int = 50,
+        with_text: bool = False,
+    ) -> list[dict[str, Any]]:
+        """Search piece text and title. Returns one row per matching piece."""
+        term = f"%{(query or '').strip()}%"
+        if term == "%%":
+            return []
+        text_col = "p.text" if with_text else "''"
+        sql = (
+            f"SELECT p.id, p.item_id, p.kind, p.ord, p.title, p.source_ref, p.meta, {text_col} AS text, "
+            "length(p.text) AS chars, i.title AS item_title, i.type AS item_type, i.stored_path "
+            "FROM pieces p JOIN items i ON i.id = p.item_id "
+            "WHERE (p.text LIKE ? OR p.title LIKE ?)"
+        )
+        params: list[Any] = [term, term]
+        if kind:
+            sql += " AND p.kind = ?"
+            params.append(kind)
+        sql += " ORDER BY p.item_id, p.kind, p.ord LIMIT ?"
+        params.append(max(1, min(int(limit), 500)))
+        with self._connect() as conn:
+            rows = [dict(r) for r in conn.execute(sql, params)]
+        for row in rows:
+            try:
+                row["meta"] = json.loads(row.get("meta") or "{}")
+            except (ValueError, TypeError):
+                row["meta"] = {}
+        return rows
+
+    def piece_tags(self, piece_id: int) -> list[dict[str, Any]]:
+        with self._connect() as conn:
+            return [
+                dict(r)
+                for r in conn.execute(
+                    "SELECT t.id, t.bucket, t.name, pt.source FROM piece_tags pt "
+                    "JOIN tags t ON t.id = pt.tag_id WHERE pt.piece_id = ? ORDER BY t.bucket, t.name",
+                    (piece_id,),
+                )
+            ]
+
+    def set_piece_tags(
+        self,
+        piece_id: int,
+        assignments: list[dict[str, str]],
+        *,
+        replace: bool = True,
+        source: str = "user",
+    ) -> list[dict[str, Any]]:
+        """Bind tags to one piece. assignments: [{bucket, name, source?}]."""
+        ensured: list[tuple[int, str]] = []
+        for raw in assignments:
+            bucket = valid_bucket(raw.get("bucket"))
+            name = normalize_tag_name(raw.get("name") or "")
+            if not bucket or not name:
+                continue
+            src = raw.get("source") or source
+            tag = self.ensure_tag(bucket, name, pending=(src != "user"), source=src)
+            if not tag or tag.get("blacklisted"):
+                continue
+            if src == "user" and tag.get("pending"):
+                with self._connect() as conn:
+                    conn.execute("UPDATE tags SET pending = 0 WHERE id = ?", (tag["id"],))
+            ensured.append((int(tag["id"]), src))
+        with self._connect() as conn:
+            if replace:
+                conn.execute("DELETE FROM piece_tags WHERE piece_id = ?", (piece_id,))
+            for tag_id, src in ensured:
+                conn.execute(
+                    "INSERT INTO piece_tags(piece_id, tag_id, source) VALUES(?, ?, ?) "
+                    "ON CONFLICT(piece_id, tag_id) DO UPDATE SET source = "
+                    "CASE WHEN excluded.source = 'user' THEN 'user' ELSE piece_tags.source END",
+                    (piece_id, tag_id, src),
+                )
+        return self.piece_tags(piece_id)
+
+    def remove_piece_tag(self, piece_id: int, tag_id: int) -> None:
+        with self._connect() as conn:
+            conn.execute("DELETE FROM piece_tags WHERE piece_id = ? AND tag_id = ?", (piece_id, tag_id))
+
+    def pieces_by_tag(self, tag_id: int, *, limit: int = 200) -> list[dict[str, Any]]:
+        with self._connect() as conn:
+            return [
+                dict(r)
+                for r in conn.execute(
+                    "SELECT p.id, p.item_id, p.kind, p.title, i.title AS item_title "
+                    "FROM piece_tags pt JOIN pieces p ON p.id = pt.piece_id "
+                    "JOIN items i ON i.id = p.item_id WHERE pt.tag_id = ? LIMIT ?",
+                    (tag_id, max(1, min(int(limit), 1000))),
+                )
+            ]
+
+    def related_pieces(self, item_id: int, *, limit: int = 200) -> list[dict[str, Any]]:
+        """Pieces of this item plus pieces of everything linked to it.
+
+        A card's own greetings/body and its embedded world entries come back
+        together; a separately stored worldbook comes back through item_links.
+        """
+        with self._connect() as conn:
+            ids = [item_id] + [
+                int(row["other"]) for row in conn.execute(
+                    "SELECT CASE WHEN from_id = ? THEN to_id ELSE from_id END AS other "
+                    "FROM item_links WHERE from_id = ? OR to_id = ?",
+                    (item_id, item_id, item_id),
+                )
+            ]
+            marks = ",".join("?" * len(ids))
+            rows = [
+                dict(r)
+                for r in conn.execute(
+                    "SELECT p.id, p.item_id, p.kind, p.ord, p.title, p.source_ref, p.meta, "
+                    "length(p.text) AS chars, i.title AS item_title "
+                    f"FROM pieces p JOIN items i ON i.id = p.item_id WHERE p.item_id IN ({marks}) "
+                    "ORDER BY p.item_id, p.kind, p.ord LIMIT ?",
+                    [*ids, max(1, min(int(limit), 1000))],
+                )
+            ]
+        for row in rows:
+            try:
+                row["meta"] = json.loads(row.get("meta") or "{}")
+            except (ValueError, TypeError):
+                row["meta"] = {}
+        return rows
+
     def taxonomy_payload(self) -> dict[str, Any]:
         return {
             "buckets": [{"id": k, "label": v} for k, v in TAG_BUCKETS],
+            "axis_subs": __import__("tavernlib.taxonomy", fromlist=["AXIS_SUBS"]).AXIS_SUBS,
+            "scopes": [{"id": k, "label": v} for k, v in SCOPE_LABELS],
+            "field_enums": __import__("tavernlib.taxonomy", fromlist=["FIELD_ENUMS"]).FIELD_ENUMS,
             "licenses": [{"id": k, "label": v} for k, v in __import__("tavernlib.taxonomy", fromlist=["LICENSE_VALUES"]).LICENSE_VALUES],
             "license_fields": [{"id": k, "label": v} for k, v in LICENSE_FIELDS],
             "link_kinds": [{"id": k, "label": v} for k, v in __import__("tavernlib.taxonomy", fromlist=["LINK_KINDS"]).LINK_KINDS],
