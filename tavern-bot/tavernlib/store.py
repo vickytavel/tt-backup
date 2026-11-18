@@ -792,6 +792,19 @@ class LibraryStore:
                     )
         return bid
 
+    def list_bundle(self, bundle_id: str) -> list[dict[str, Any]]:
+        """All items sharing one bundle id (including ones without explicit links)."""
+        if not bundle_id:
+            return []
+        with self._connect() as conn:
+            return [
+                dict(r)
+                for r in conn.execute(
+                    "SELECT * FROM items WHERE bundle_id = ? ORDER BY id",
+                    (bundle_id,),
+                )
+            ]
+
     # --- tags / themes / links / fragments ---------------------------------
 
     def list_tags(self, bucket: str | None = None, *, include_blacklisted: bool = False) -> list[dict[str, Any]]:
