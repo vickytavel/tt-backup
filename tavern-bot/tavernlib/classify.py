@@ -196,6 +196,15 @@ def _is_regex(obj: dict) -> bool:
     return False
 
 
+def _is_qr_set(obj: dict) -> bool:
+    """SillyTavern Quick Replies v2 set: {"version": 2, "name": ..., "qrList": [{label, message, ...}]}"""
+    qr_list = obj.get("qrList")
+    if not isinstance(qr_list, list) or not qr_list:
+        return False
+    first = qr_list[0]
+    return isinstance(first, dict) and _has_keys(first, {"label", "message", "contextList"}, 1)
+
+
 def _looks_like_chat_list(value: Any) -> bool:
     if not isinstance(value, list) or not value:
         return False
@@ -267,7 +276,7 @@ def classify_json_obj(obj: Any, filename: str = "", hint: str = "") -> Classific
     if _has_keys(data, _KOBOLD_KEYS, 2) or ("rep_pen" in data and "sampler_order" in data):
         return Classification(type="preset", subtype="kobold", title=_title_from(data, fallback), reason="preset-kobold")
 
-    if _has_keys(data, _QR_KEYS, 2):
+    if _is_qr_set(data) or _has_keys(data, _QR_KEYS, 2):
         return Classification(type="preset", subtype="quick-replies", title=_title_from(data, fallback), reason="preset-qr")
 
     if _has_keys(data, _THEME_KEYS, 3) or ("main_text_color" in data and "name" in data):
