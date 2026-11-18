@@ -123,7 +123,7 @@ def copy_local(src: Path, dest: Path) -> None:
     data = src.read_bytes()
     tmp = dest.with_name(dest.name + ".part")
     tmp.write_bytes(data)
-    os.chmod(tmp.name, 0o644)
+    os.chmod(tmp, 0o644)
     tmp.replace(dest)
 
 
