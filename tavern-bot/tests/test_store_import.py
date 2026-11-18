@@ -11,7 +11,7 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT))
 
-from tavernlib.import_st import copy_local, dest_dir_for, import_item
+from tavernlib.import_st import copy_local, dest_dir_for, import_item, import_set, ImportError_
 from tavernlib.pngutil import read_chara_json, wrap_card_as_png
 from tavernlib.store import LibraryStore, safe_filename, unique_path
 
