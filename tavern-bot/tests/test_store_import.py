@@ -210,6 +210,38 @@ class ImportSetTests(unittest.TestCase):
         )
         return item
 
+    def _card_embedded(self, title, book_name, entries=2, regex=0):
+        data = {
+            "name": title,
+            "description": "d",
+            "first_mes": "hi",
+            "extensions": {"world": book_name},
+            "character_book": {
+                "name": book_name,
+                "entries": [
+                    {
+                        "id": i,
+                        "keys": [f"k{i}"],
+                        "content": f"c{i}",
+                        "enabled": True,
+                        "insertion_order": 100,
+                        "position": "before_char",
+                    }
+                    for i in range(entries)
+                ],
+            },
+        }
+        if regex:
+            data["extensions"]["regex_scripts"] = [
+                {"scriptName": f"r{i}", "findRegex": f"/x{i}/g", "replaceString": "", "placement": [1], "disabled": False}
+                for i in range(regex)
+            ]
+        card = json.dumps({"spec": "chara_card_v2", "spec_version": "2.0", "data": data}, ensure_ascii=False)
+        item, _ = self.lib.add_file(
+            wrap_card_as_png(card), type="character", subtype=None, title=title, original_filename=f"{title}.png"
+        )
+        return item
+
     def test_import_set_bundles_card_world_qr(self):
         card = self._card("甲")
         world = self._world("甲的世界")
@@ -313,6 +345,42 @@ class ImportSetTests(unittest.TestCase):
         result = self._set(card["id"])
         self.assertTrue(result["card_world"]["embedded"])
         self.assertFalse(result["card_world"]["matched"])
+
+    def test_import_set_writes_embedded_world(self):
+        """卡内嵌世界书应落地成 worlds/<书名>.json，而不是报“库里没有”。"""
+        card = self._card_embedded("壬二", "壬二·世界", entries=3)
+        result = self._set(card["id"])
+        self.assertEqual(result["summary"]["imported"], 1)
+        self.assertTrue(result["card_world"]["embedded"])
+        self.assertEqual(result["embedded_world"]["status"], "written")
+        dest = self.st / "worlds" / "壬二·世界.json"
+        self.assertTrue(dest.is_file())
+        payload = json.loads(dest.read_text(encoding="utf-8"))
+        self.assertEqual(len(payload["entries"]), 3)
+        self.assertEqual(payload["entries"]["0"]["key"], ["k0"])
+        reasons = " ".join(str(m.get("reason") or "") for m in result["members"])
+        self.assertNotIn("资源库里没有", reasons)
+
+    def test_import_set_allows_scoped_regex(self):
+        """卡内正则属于 SCOPED 脚本，应把角色加入白名单而不是复制进全局列表。"""
+        settings = self.st / "settings.json"
+        settings.write_text(json.dumps({"extension_settings": {"regex": [], "character_allowed_regex": []}}), encoding="utf-8")
+        card = self._card_embedded("戊二", "戊二·世界", entries=1, regex=2)
+        result = self._set(card["id"])
+        self.assertEqual(result["scoped_regex"]["count"], 2)
+        self.assertEqual(result["scoped_regex"]["status"], "added")
+        data = json.loads(settings.read_text(encoding="utf-8"))
+        self.assertIn("戊二.png", data["extension_settings"]["character_allowed_regex"])
+        self.assertEqual(data["extension_settings"]["regex"], [])
+
+    def test_import_set_regex_whitelist_idempotent(self):
+        settings = self.st / "settings.json"
+        settings.write_text(json.dumps({"extension_settings": {"character_allowed_regex": ["己二.png"]}}), encoding="utf-8")
+        card = self._card_embedded("己二", "己二·世界", entries=1, regex=1)
+        result = self._set(card["id"])
+        self.assertEqual(result["scoped_regex"]["status"], "already")
+        data = json.loads(settings.read_text(encoding="utf-8"))
+        self.assertEqual(data["extension_settings"]["character_allowed_regex"], ["己二.png"])
 
 
 if __name__ == "__main__":
