@@ -221,3 +221,125 @@ def import_item(
     finally:
         if tmp is not None:
             tmp.unlink(missing_ok=True)
+
+
+# --- apply-a-set (character card + linked worldbooks / quick replies) ------
+
+SET_LINK_KINDS = frozenset({"character_worldbook", "worldbook_extra", "bundle"})
+
+
+def _set_member_allowed(item: dict) -> bool:
+    """Whole-set import takes worldbooks and Quick Replies; presets and other cards stay out."""
+    typ = item.get("type")
+    if typ == "world":
+        return True
+    return typ == "preset" and (item.get("subtype") or "") == "quick-replies"
+
+
+def _skipped_reason(item: dict) -> str:
+    typ = item.get("type")
+    if typ == "preset":
+        return "预设不随整套导入，请在酒馆里自行选用"
+    if typ == "character":
+        return "另一张角色卡，请在它自己的详情页单独导入"
+    if typ == "other":
+        return "截图等辅助文件不导入酒馆"
+    return "该类型不随整套导入"
+
+
+def collect_set_members(store: LibraryStore, anchor: dict) -> list[dict]:
+    """Anchor's companions via links (character_worldbook / worldbook_extra / bundle) and bundle id."""
+    enriched = store.get_enriched(anchor["id"]) or anchor
+    anchor_id = int(anchor["id"])
+    seen: set[int] = set()
+    members: list[dict] = []
+
+    def _add(other_id: Any) -> None:
+        try:
+            oid = int(other_id)
+        except (TypeError, ValueError):
+            return
+        if oid == anchor_id or oid in seen:
+            return
+        row = store.get(oid)
+        if row:
+            seen.add(oid)
+            members.append(row)
+
+    for link in enriched.get("links") or []:
+        if link.get("kind") not in SET_LINK_KINDS:
+            continue
+        if link.get("from_id") == anchor_id:
+            _add(link.get("to_id"))
+        else:
+            _add(link.get("from_id"))
+    bid = enriched.get("bundle_id") or ""
+    if bid:
+        for row in store.list_bundle(bid):
+            _add(row.get("id"))
+    return members
+
+
+def import_set(
+    store: LibraryStore,
+    item_id: int,
+    *,
+    st_root: Path | None = None,
+    copy_fn: CopyFn | None = None,
+    confirm_again: bool = False,
+) -> dict:
+    """Copy a character plus its linked worldbooks / Quick Replies into SillyTavern.
+
+    Presets are deliberately left out (they are global settings, not per-card companions).
+    Already-imported items are reported as such; confirm_again re-copies with new names.
+    Never overwrites: on name collision the unique-name suffix rule applies.
+    """
+    anchor = store.get(item_id)
+    if not anchor:
+        raise ImportError_("找不到这条资源")
+    if anchor.get("type") != "character":
+        raise ImportError_("整套应用只对角色卡开放；世界书、QR 等请单独导入。")
+    members = collect_set_members(store, anchor)
+    counts = {"imported": 0, "already": 0, "skipped": 0, "failed": 0}
+
+    def _import_one(row: dict, *, is_anchor: bool) -> dict:
+        entry = {
+            "id": row["id"],
+            "title": row.get("title") or "",
+            "type": row.get("type"),
+            "subtype": row.get("subtype"),
+            "is_anchor": is_anchor,
+        }
+        if not is_anchor and not _set_member_allowed(row):
+            entry["status"] = "skipped"
+            entry["reason"] = _skipped_reason(row)
+            counts["skipped"] += 1
+            return entry
+        try:
+            res = import_item(store, row["id"], st_root=st_root, copy_fn=copy_fn, confirm_again=confirm_again)
+        except ImportError_ as exc:
+            if str(exc) == "already_imported":
+                entry["status"] = "already"
+                entry["reason"] = "已导入过，本次跳过"
+                counts["already"] += 1
+            else:
+                entry["status"] = "failed"
+                entry["reason"] = str(exc)
+                counts["failed"] += 1
+            return entry
+        entry["status"] = "imported"
+        entry["dest_name"] = res["dest_name"]
+        entry["dest_dir"] = res["dest_dir"]
+        counts["imported"] += 1
+        return entry
+
+    anchor_result = _import_one(anchor, is_anchor=True)
+    if anchor_result["status"] == "failed":
+        raise ImportError_(anchor_result["reason"])
+    member_results = [_import_one(m, is_anchor=False) for m in members]
+    return {
+        "ok": True,
+        "anchor": anchor_result,
+        "members": member_results,
+        "summary": counts,
+    }
