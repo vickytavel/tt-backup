@@ -160,9 +160,6 @@ class ImportTests(unittest.TestCase):
         self.assertIsNone(dest_dir_for({"type": "other", "subtype": None}, self.st))
 
 
-if __name__ == "__main__":
-    unittest.main()
-
 class ImportSetTests(unittest.TestCase):
     def setUp(self):
         self.tmp = tempfile.TemporaryDirectory()
@@ -196,6 +193,21 @@ class ImportSetTests(unittest.TestCase):
     def _qr(self, title):
         data = json.dumps({"version": 2, "name": title, "qrList": [{"label": "hi", "message": "/echo hi"}]}, ensure_ascii=False).encode()
         item, _ = self.lib.add_file(data, type="preset", subtype="quick-replies", title=title, original_filename=f"{title}.json")
+        return item
+
+    def _card_with_world(self, title, world="", embedded=False):
+        data = {"name": title, "description": "d", "first_mes": "hi"}
+        if world:
+            data["extensions"] = {"world": world}
+        if embedded:
+            data["character_book"] = {"entries": [{"keys": ["k"], "content": "c", "uid": 1, "enabled": True}]}
+        card = json.dumps(
+            {"spec": "chara_card_v2", "spec_version": "2.0", "data": data},
+            ensure_ascii=False,
+        )
+        item, _ = self.lib.add_file(
+            wrap_card_as_png(card), type="character", subtype=None, title=title, original_filename=f"{title}.png"
+        )
         return item
 
     def test_import_set_bundles_card_world_qr(self):
@@ -264,3 +276,41 @@ class ImportSetTests(unittest.TestCase):
         self.assertEqual(result["members"], [])
         self.assertEqual(result["anchor"]["status"], "imported")
         self.assertEqual(result["summary"]["imported"], 1)
+
+    def test_import_set_uses_card_bound_world(self):
+        """卡内 extensions.world 指向的世界书，即使没手工建关联也要一并导入。"""
+        self._world("卡绑世界")
+        card = self._card_with_world("庚", world="卡绑世界")
+        result = self._set(card["id"])
+        self.assertEqual(result["summary"]["imported"], 2)
+        self.assertTrue((self.st / "worlds" / "卡绑世界.json").is_file())
+        self.assertTrue(result["card_world"]["matched"])
+        self.assertEqual(result["card_world"]["name"], "卡绑世界")
+
+    def test_import_set_renames_world_to_card_binding(self):
+        """库里标题与绑定名不同时，按绑定名命名，酒馆才能自动挂上世界书。"""
+        data = json.dumps({"name": "文件里的世界", "entries": {"1": {"uid": 1, "keys": ["a"], "content": "b", "enabled": True}}}).encode()
+        self.lib.add_file(data, type="world", subtype=None, title="显示标题", original_filename="正式名.json")
+        card = self._card_with_world("辛", world="正式名")
+        result = self._set(card["id"])
+        self.assertTrue(result["card_world"]["matched"])
+        self.assertEqual(result["summary"]["imported"], 2)
+        self.assertTrue((self.st / "worlds" / "正式名.json").is_file())
+        self.assertFalse((self.st / "worlds" / "显示标题.json").exists())
+
+    def test_import_set_reports_missing_card_world(self):
+        card = self._card_with_world("壬", world="库里没有的世界")
+        result = self._set(card["id"])
+        self.assertEqual(result["summary"]["imported"], 1)
+        self.assertFalse(result["card_world"]["matched"])
+        self.assertEqual(result["card_world"]["name"], "库里没有的世界")
+
+    def test_import_set_reports_embedded_world(self):
+        card = self._card_with_world("癸", embedded=True)
+        result = self._set(card["id"])
+        self.assertTrue(result["card_world"]["embedded"])
+        self.assertFalse(result["card_world"]["matched"])
+
+
+if __name__ == "__main__":
+    unittest.main()
