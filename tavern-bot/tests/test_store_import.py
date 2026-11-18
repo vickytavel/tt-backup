@@ -304,6 +304,9 @@ class ImportSetTests(unittest.TestCase):
         self.assertEqual(result["summary"]["imported"], 1)
         self.assertFalse(result["card_world"]["matched"])
         self.assertEqual(result["card_world"]["name"], "库里没有的世界")
+        hints = [m for m in result["members"] if m["status"] == "skipped"]
+        self.assertEqual(len(hints), 1)
+        self.assertIn("库里没有的世界", hints[0]["title"])
 
     def test_import_set_reports_embedded_world(self):
         card = self._card_with_world("癸", embedded=True)
