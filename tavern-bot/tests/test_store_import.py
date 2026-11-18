@@ -162,3 +162,105 @@ class ImportTests(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+class ImportSetTests(unittest.TestCase):
+    def setUp(self):
+        self.tmp = tempfile.TemporaryDirectory()
+        base = Path(self.tmp.name)
+        self.lib = LibraryStore(base / "lib")
+        self.st = base / "st"
+        for name in ("characters", "worlds", "OpenAI Settings", "QuickReplies", "themes", "User Avatars"):
+            (self.st / name).mkdir(parents=True)
+        os.environ["TAVERN_IMPORT_LOCAL"] = "1"
+
+    def tearDown(self):
+        os.environ.pop("TAVERN_IMPORT_LOCAL", None)
+        self.tmp.cleanup()
+
+    def _set(self, item_id, confirm=False):
+        return import_set(self.lib, item_id, st_root=self.st, copy_fn=copy_local, confirm_again=confirm)
+
+    def _card(self, title):
+        card = json.dumps(
+            {"spec": "chara_card_v2", "spec_version": "2.0", "data": {"name": title, "description": "d", "first_mes": "hi"}},
+            ensure_ascii=False,
+        )
+        item, _ = self.lib.add_file(wrap_card_as_png(card), type="character", subtype=None, title=title, original_filename=f"{title}.png")
+        return item
+
+    def _world(self, title):
+        data = json.dumps({"name": title, "entries": {"1": {"uid": 1, "keys": ["a"], "content": "b", "enabled": True}}}).encode()
+        item, _ = self.lib.add_file(data, type="world", subtype=None, title=title, original_filename=f"{title}.json")
+        return item
+
+    def _qr(self, title):
+        data = json.dumps({"version": 2, "name": title, "qrList": [{"label": "hi", "message": "/echo hi"}]}, ensure_ascii=False).encode()
+        item, _ = self.lib.add_file(data, type="preset", subtype="quick-replies", title=title, original_filename=f"{title}.json")
+        return item
+
+    def test_import_set_bundles_card_world_qr(self):
+        card = self._card("甲")
+        world = self._world("甲的世界")
+        qr = self._qr("甲的QR")
+        self.lib.set_bundle([card["id"], world["id"], qr["id"]])
+        result = self._set(card["id"])
+        self.assertTrue(result["ok"])
+        self.assertEqual(result["summary"]["imported"], 3)
+        self.assertEqual(result["summary"]["skipped"], 0)
+        self.assertEqual(result["anchor"]["status"], "imported")
+        self.assertTrue((self.st / "characters" / "甲.png").is_file())
+        self.assertTrue((self.st / "worlds" / "甲的世界.json").is_file())
+        self.assertTrue((self.st / "QuickReplies" / "甲的QR.json").is_file())
+
+    def test_import_set_excludes_preset_and_other_card(self):
+        card = self._card("乙")
+        preset, _ = self.lib.add_file(
+            json.dumps({"chat_completion_source": "openai"}).encode(),
+            type="preset",
+            subtype="openai",
+            title="P",
+            original_filename="p.json",
+        )
+        other = self._card("丙")
+        self.lib.set_bundle([card["id"], preset["id"], other["id"]])
+        result = self._set(card["id"])
+        self.assertEqual(result["summary"]["imported"], 1)
+        self.assertEqual(result["summary"]["skipped"], 2)
+        statuses = {m["id"]: m["status"] for m in result["members"]}
+        self.assertEqual(statuses[preset["id"]], "skipped")
+        self.assertEqual(statuses[other["id"]], "skipped")
+        self.assertFalse((self.st / "OpenAI Settings" / "P.json").exists())
+
+    def test_import_set_via_character_worldbook_link(self):
+        card = self._card("丁")
+        world = self._world("丁世界")
+        self.lib.add_link(card["id"], world["id"], "character_worldbook")
+        result = self._set(card["id"])
+        self.assertEqual(result["summary"]["imported"], 2)
+        self.assertTrue((self.st / "worlds" / "丁世界.json").is_file())
+
+    def test_import_set_already_and_confirm_again(self):
+        card = self._card("戊")
+        qr = self._qr("戊QR")
+        self.lib.set_bundle([card["id"], qr["id"]])
+        r1 = self._set(card["id"])
+        self.assertEqual(r1["summary"]["imported"], 2)
+        r2 = self._set(card["id"])
+        self.assertEqual(r2["summary"]["already"], 2)
+        self.assertEqual(r2["summary"]["imported"], 0)
+        r3 = self._set(card["id"], confirm=True)
+        self.assertEqual(r3["summary"]["imported"], 2)
+        self.assertTrue((self.st / "characters" / "戊_2.png").is_file())
+        self.assertTrue((self.st / "QuickReplies" / "戊QR_2.json").is_file())
+
+    def test_import_set_requires_character_anchor(self):
+        world = self._world("锚不是卡")
+        with self.assertRaises(ImportError_):
+            self._set(world["id"])
+
+    def test_import_set_without_members(self):
+        card = self._card("己")
+        result = self._set(card["id"])
+        self.assertEqual(result["members"], [])
+        self.assertEqual(result["anchor"]["status"], "imported")
+        self.assertEqual(result["summary"]["imported"], 1)
