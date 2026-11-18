@@ -8,6 +8,7 @@ import io
 import logging
 import os
 import sys
+import time
 from pathlib import Path
 from typing import Iterable
 
@@ -16,7 +17,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parent))
 import discord
 from discord import ChannelType, ForumChannel, InteractionType
 
-from tavernlib.classify import classify
+from tavernlib.classify import Classification, classify
 from tavernlib.discord_form import (
     apply_modal,
     apply_select,
@@ -50,6 +51,34 @@ LOG = logging.getLogger("tavern-bot")
 
 MAX_ATTACHMENT_BYTES = 80 * 1024 * 1024
 THREAD_NAME_MAX = 100
+
+# 无说明的普通图片（截图、预览图）不建库记录，直接忽略。
+IGNORED_IMAGE_REASONS = {"png-no-chara", "webp-no-chara", "image-no-chara"}
+
+# 作者简介暂存：先转发一条带文字的消息，紧接着投递的资源会自动挂上这段简介。
+NOTE_CACHE_TTL = 15 * 60
+NOTE_CLEAR_WORDS = ("清空简介", "清除简介")
+
+
+def _is_ignored_image_result(result: Classification) -> bool:
+    return result.type == "other" and result.reason in IGNORED_IMAGE_REASONS
+
+
+def _message_texts(message: discord.Message) -> list[str]:
+    parts: list[str] = []
+    if (getattr(message, "content", "") or "").strip():
+        parts.append(message.content.strip())
+    for snap in getattr(message, "message_snapshots", None) or []:
+        text = (getattr(snap, "content", None) or "").strip()
+        if text and text not in parts:
+            parts.append(text)
+    return parts
+
+
+def _merge_note(cached: str, own: str) -> str:
+    parts = [p for p in (cached, own) if p]
+    return "\n\n".join(parts)
+
 
 # Loaded from /opt/tavern-bot/.env (also systemd EnvironmentFile).
 TOKEN = (os.environ.get("DISCORD_TOKEN") or "").strip()
@@ -143,6 +172,7 @@ class TavernBot(discord.Client):
         self._layout_lock = asyncio.Lock()
         self._layout_ready = False
         self._refile_task: asyncio.Task | None = None
+        self._note_cache: dict[tuple[int, int], tuple[float, str]] = {}
 
     def configured_guild(self) -> discord.Guild | None:
         if self.guild_id:
@@ -346,14 +376,25 @@ class TavernBot(discord.Client):
         return found
 
     def _ingest_note(self, message: discord.Message) -> str:
-        parts: list[str] = []
-        if (message.content or "").strip():
-            parts.append(message.content.strip())
-        for snap in getattr(message, "message_snapshots", None) or []:
-            text = (getattr(snap, "content", None) or "").strip()
-            if text and text not in parts:
-                parts.append(text)
-        return "\n\n".join(parts)
+        return "\n\n".join(_message_texts(message))
+
+    def _cache_key(self, message: discord.Message) -> tuple[int, int]:
+        channel_id = getattr(message.channel, "id", 0) or 0
+        return (channel_id, message.author.id)
+
+    def _cached_note(self, message: discord.Message) -> str:
+        entry = self._note_cache.get(self._cache_key(message))
+        if not entry:
+            return ""
+        stored_at, text = entry
+        if time.time() - stored_at > NOTE_CACHE_TTL:
+            self._note_cache.pop(self._cache_key(message), None)
+            return ""
+        return text
+
+    def _store_note_cache(self, message: discord.Message, text: str) -> None:
+        if text:
+            self._note_cache[self._cache_key(message)] = (time.time(), text)
 
     def _is_direct_request(self, message: discord.Message) -> bool:
         if message.guild is None or isinstance(message.channel, discord.DMChannel):
@@ -371,11 +412,38 @@ class TavernBot(discord.Client):
         attachments = self._ingest_attachments(message)
         if not attachments:
             if self._is_direct_request(message):
-                LOG.info("Received a message with no file (forward snapshots=%s)",
-                         len(getattr(message, "message_snapshots", None) or []))
+                own_note = self._ingest_note(message)
+                if not own_note:
+                    LOG.info("Received a message with no file (forward snapshots=%s)",
+                             len(getattr(message, "message_snapshots", None) or []))
+                    try:
+                        await message.reply(
+                            "我没有读到文件。请直接上传附件，或转发一条带文件的消息（不要只转发纯文字）。",
+                            mention_author=False,
+                        )
+                    except discord.HTTPException:
+                        pass
+                    return
+                guild = message.guild
+                if guild is not None:
+                    configured = self.configured_guild()
+                    if configured is None or guild.id != configured.id:
+                        return
+                if not await self.is_allowed(message.author, in_guild=guild):
+                    return
+                if any(word in own_note for word in NOTE_CLEAR_WORDS):
+                    self._note_cache.pop(self._cache_key(message), None)
+                    try:
+                        await message.reply("已清空本频道的简介暂存。", mention_author=False)
+                    except discord.HTTPException:
+                        pass
+                    return
+                self._store_note_cache(message, own_note)
+                preview = own_note[:60] + ("…" if len(own_note) > 60 else "")
                 try:
                     await message.reply(
-                        "我没有读到文件。请直接上传附件，或转发一条带文件的消息（不要只转发纯文字）。",
+                        f"已收到作者简介（{len(own_note)} 字），暂存 {NOTE_CACHE_TTL // 60} 分钟。"
+                        f"接下来直接转发角色卡即可，会自动附上这段简介；发「清空简介」可作废。\n预览：{preview}",
                         mention_author=False,
                     )
                 except discord.HTTPException:
@@ -402,7 +470,9 @@ class TavernBot(discord.Client):
 
         results: list[str] = []
         ingested_ids: list[int] = []
-        note = self._ingest_note(message)
+        cached_note = self._cached_note(message)
+        own_note = self._ingest_note(message)
+        note = _merge_note(cached_note, own_note)
         author = f"{message.author.display_name} ({message.author.id})"
         channel_name = ""
         if guild is not None and not isinstance(message.channel, discord.DMChannel):
@@ -426,6 +496,18 @@ class TavernBot(discord.Client):
                 self.store.set_bundle(ingested_ids)
             except Exception:
                 LOG.exception("Failed to bind bundle for a multi-file message")
+
+        if ingested_ids:
+            if cached_note:
+                results.append(f"（已自动附加之前暂存的作者简介 {len(cached_note)} 字）")
+        elif own_note:
+            # 整条消息没有任何可入库文件（例如转发的作者原帖里只有截图），
+            # 把文字暂存为简介，等下一条真正的资源投递挂上。
+            self._store_note_cache(message, own_note)
+            results.append(
+                "没有可入库的文件；已把这条消息的文字暂存为作者简介，"
+                "接下来直接转发角色卡即可。发「清空简介」可作废。"
+            )
 
         text = "\n".join(results) if results else "没有可入库的附件。"
         try:
@@ -458,6 +540,8 @@ class TavernBot(discord.Client):
             return f"「{filename}」太大，已跳过。", None
 
         result = classify(data, filename=filename, hint=note, channel_name=channel_name)
+        if _is_ignored_image_result(result):
+            return f"「{filename}」是普通图片，未检测到角色卡数据或说明词，未入库。", None
         title = result.title or Path(filename).stem or "未命名"
         catalog_only = result.type in CATALOG_ONLY_TYPES
         thumb = ""
