@@ -425,6 +425,20 @@ def import_set(
     if anchor_result["status"] == "failed":
         raise ImportError_(anchor_result["reason"])
     member_results = [_import_one(m, is_anchor=False) for m in members]
+    if world_name and bound_world is None:
+        # Surface a missing binding as a normal result row so the web UI shows it
+        # without any extra front-end code. It is not counted in `summary`.
+        member_results.append(
+            {
+                "id": None,
+                "title": f"卡内绑定的世界书「{world_name}」",
+                "type": "world",
+                "subtype": None,
+                "is_anchor": False,
+                "status": "skipped",
+                "reason": "资源库里没有这本，导入后需在酒馆里手动指定",
+            }
+        )
     return {
         "ok": True,
         "anchor": anchor_result,
