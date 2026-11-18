@@ -7,10 +7,10 @@ import os
 import subprocess
 import tempfile
 from pathlib import Path
-from typing import Callable
+from typing import Any, Callable
 
 from .paths import ALLOWED_ST_DIR_NAMES, IMPORTABLE_TYPES, ST_DEST_DIRS, ST_USER_ROOT
-from .pngutil import is_png, wrap_card_as_png
+from .pngutil import is_png, read_chara_json, wrap_card_as_png
 from .store import LibraryStore, safe_filename
 
 HELPER = Path(os.environ.get("TAVERN_IMPORT_HELPER", "/opt/tavern-bot/import_helper.py"))
@@ -123,7 +123,7 @@ def copy_local(src: Path, dest: Path) -> None:
     data = src.read_bytes()
     tmp = dest.with_name(dest.name + ".part")
     tmp.write_bytes(data)
-    os.chmod(tmp, 0o644)
+    os.chmod(tmp.name, 0o644)
     tmp.replace(dest)
 
 
@@ -161,6 +161,7 @@ def import_item(
     st_root: Path | None = None,
     copy_fn: CopyFn | None = None,
     confirm_again: bool = False,
+    name_override: str | None = None,
 ) -> dict:
     """Copy a library item into SillyTavern. Never overwrites existing files.
 
@@ -196,6 +197,10 @@ def import_item(
         raise ImportError_("already_imported")
 
     prepared, hint, tmp = prepare_source(item, src)
+    if name_override:
+        override = safe_filename(name_override)
+        if override:
+            hint = f"{override}{Path(hint).suffix}"
     try:
         dest_name = _unique_name(dest_dir, hint)
         dest = dest_dir / dest_name
@@ -280,6 +285,63 @@ def collect_set_members(store: LibraryStore, anchor: dict) -> list[dict]:
     return members
 
 
+def read_card_payload(src: Path) -> dict[str, Any] | None:
+    """Read the card JSON out of a library file (PNG chara chunk / JSON / CharX)."""
+    try:
+        data = src.read_bytes()
+    except OSError:
+        return None
+    try:
+        if is_png(data):
+            raw = read_chara_json(data) or ""
+        elif src.suffix.lower() == ".json" or data.lstrip().startswith(b"{"):
+            raw = data.decode("utf-8-sig")
+        else:
+            from .classify import _scan_embedded_card, read_charx_card
+
+            charx = read_charx_card(data)
+            raw = charx[0] if charx else (_scan_embedded_card(data) or "")
+        payload = json.loads(raw) if raw else None
+    except (ValueError, UnicodeDecodeError, OSError):
+        return None
+    return payload if isinstance(payload, dict) else None
+
+
+def card_world_binding(payload: dict[str, Any] | None) -> tuple[str, bool]:
+    """Return (bound worldbook name, whether the card embeds its own worldbook).
+
+    SillyTavern keeps the picked worldbook in `data.extensions.world` and an
+    exported inline worldbook in `data.character_book`; both travel inside the card.
+    """
+    if not isinstance(payload, dict):
+        return "", False
+    data = payload.get("data")
+    if not isinstance(data, dict):
+        data = payload
+    name = ""
+    extensions = data.get("extensions")
+    if isinstance(extensions, dict):
+        value = extensions.get("world")
+        if isinstance(value, str):
+            name = value.strip()
+    book = data.get("character_book")
+    embedded = isinstance(book, dict) and bool(book.get("entries"))
+    return name, embedded
+
+
+def find_library_world(store: LibraryStore, name: str) -> dict[str, Any] | None:
+    """Find the world item whose title or original filename matches the binding."""
+    target = (name or "").strip()
+    if not target:
+        return None
+    for row in store.list_items(type_filter="world"):
+        if (row.get("title") or "").strip() == target:
+            return row
+        if Path(row.get("original_filename") or "").stem.strip() == target:
+            return row
+    return None
+
+
 def import_set(
     store: LibraryStore,
     item_id: int,
@@ -300,6 +362,25 @@ def import_set(
     if anchor.get("type") != "character":
         raise ImportError_("整套应用只对角色卡开放；世界书、QR 等请单独导入。")
     members = collect_set_members(store, anchor)
+
+    # The card itself records which worldbook it belongs to (extensions.world)
+    # and may even embed one (character_book). Trust that over hand-made links.
+    world_name, embedded_world = ("", False)
+    if anchor.get("stored_path"):
+        try:
+            card_path = store.abspath(anchor["stored_path"])
+        except ValueError:
+            card_path = None
+        if card_path is not None and card_path.is_file():
+            world_name, embedded_world = card_world_binding(read_card_payload(card_path))
+    bound_world = find_library_world(store, world_name) if world_name else None
+    if bound_world is not None and all(int(m["id"]) != int(bound_world["id"]) for m in members):
+        members.append(bound_world)
+    # SillyTavern only links a worldbook whose filename matches `extensions.world`.
+    name_overrides: dict[int, str] = {}
+    if bound_world is not None and (bound_world.get("title") or "").strip() != world_name:
+        name_overrides[int(bound_world["id"])] = world_name
+
     counts = {"imported": 0, "already": 0, "skipped": 0, "failed": 0}
 
     def _import_one(row: dict, *, is_anchor: bool) -> dict:
@@ -316,7 +397,14 @@ def import_set(
             counts["skipped"] += 1
             return entry
         try:
-            res = import_item(store, row["id"], st_root=st_root, copy_fn=copy_fn, confirm_again=confirm_again)
+            res = import_item(
+                store,
+                row["id"],
+                st_root=st_root,
+                copy_fn=copy_fn,
+                confirm_again=confirm_again,
+                name_override=name_overrides.get(int(row["id"])),
+            )
         except ImportError_ as exc:
             if str(exc) == "already_imported":
                 entry["status"] = "already"
@@ -342,4 +430,10 @@ def import_set(
         "anchor": anchor_result,
         "members": member_results,
         "summary": counts,
+        "card_world": {
+            "name": world_name,
+            "embedded": embedded_world,
+            "matched": bound_world is not None,
+            "matched_id": int(bound_world["id"]) if bound_world is not None else None,
+        },
     }
