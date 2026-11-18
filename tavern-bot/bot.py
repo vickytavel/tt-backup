@@ -931,7 +931,8 @@ class TavernBot(discord.Client):
                 asyncio.create_task(self.post_or_refresh_form(item_id))
             return
         if action == "tagsel":
-            item = apply_tag_select(store, item, extra, select_values(interaction)) or item
+            bucket = extra.split("/", 1)[0]
+            item = apply_tag_select(store, item, bucket, select_values(interaction)) or item
             await edit_form(interaction, item, store, f"tag:{extra}")
             asyncio.create_task(self.post_or_refresh_form(item_id))
             return

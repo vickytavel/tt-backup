@@ -15,6 +15,7 @@ from .format_card import format_form_text
 from .paths import TYPE_LABELS
 from .store import LibraryStore
 from .taxonomy import (
+    AXIS_SUBS,
     BUCKET_IDS,
     BUCKET_LABELS,
     LICENSE_FIELDS,
@@ -28,6 +29,7 @@ from .taxonomy import (
     normalize_tag_name,
     normalize_theme_path,
     parse_list_field,
+    resolve_tag,
 )
 
 CUSTOM_PREFIX = "tlib:"
@@ -137,10 +139,45 @@ def tags_home_view(item_id: int) -> discord.ui.View:
     return view
 
 
-def tag_bucket_view(item_id: int, bucket: str, choices: list[dict[str, Any]], selected_ids: set[int]) -> discord.ui.View:
+def _tag_sub(name: str) -> str:
+    record = resolve_tag(name)
+    return str(record.get("sub") or "") if record else ""
+
+
+def tag_sub_view(item_id: int, bucket: str, choices: list[dict[str, Any]], selected_ids: set[int]) -> discord.ui.View:
+    """轴内标签多于一个下拉能放下的数量时，先按子类分流。"""
+    view = discord.ui.View(timeout=None)
+    counts: dict[str, int] = {}
+    chosen: dict[str, int] = {}
+    for tag in choices:
+        sub = _tag_sub(tag["name"])
+        counts[sub] = counts.get(sub, 0) + 1
+        if int(tag["id"]) in selected_ids:
+            chosen[sub] = chosen.get(sub, 0) + 1
+    subs = [sub for sub in (AXIS_SUBS.get(bucket) or []) if counts.get(sub)]
+    if counts.get(""):
+        subs.append("")
+    for sub in subs[:22]:
+        label = sub or "未分类"
+        if chosen.get(sub):
+            label += f" ·已选{chosen[sub]}"
+        view.add_item(_btn(label, cid("tagbucket", item_id, f"{bucket}/{sub}")))
+    view.add_item(_btn("返回标签类别", cid("sec", item_id, "tags")))
+    _back_and_home(view, item_id)
+    return view
+
+
+def tag_bucket_view(
+    item_id: int,
+    bucket: str,
+    choices: list[dict[str, Any]],
+    selected_ids: set[int],
+    sub: str = "",
+) -> discord.ui.View:
     view = discord.ui.View(timeout=None)
     options: list[discord.SelectOption] = [discord.SelectOption(label="（不选 / 清空这类）", value="__clear__")]
-    for tag in choices[:24]:
+    ordered = sorted(choices, key=lambda tag: (int(tag["id"]) not in selected_ids, tag["name"]))
+    for tag in ordered[:24]:
         flag = ""
         if tag.get("pending"):
             flag = "（待确认）"
@@ -152,8 +189,8 @@ def tag_bucket_view(item_id: int, bucket: str, choices: list[dict[str, Any]], se
             )
         )
     select = discord.ui.Select(
-        placeholder=f"选择{BUCKET_LABELS.get(bucket, bucket)}标签",
-        custom_id=cid("tagsel", item_id, bucket),
+        placeholder=f"选择{BUCKET_LABELS.get(bucket, bucket)}标签"[:150],
+        custom_id=cid("tagsel", item_id, f"{bucket}/{sub}" if sub else bucket),
         min_values=1,
         max_values=min(25, len(options)),
         options=options,
@@ -162,6 +199,8 @@ def tag_bucket_view(item_id: int, bucket: str, choices: list[dict[str, Any]], se
     view.add_item(_btn("自定义标签", cid("modal", item_id, f"tag:{bucket}")))
     if bucket == "character":
         view.add_item(_btn("填写年龄/称呼", cid("modal", item_id, "basic")))
+    if sub:
+        view.add_item(_btn("返回子类", cid("tagbucket", item_id, bucket)))
     view.add_item(_btn("返回标签类别", cid("sec", item_id, "tags")))
     _back_and_home(view, item_id)
     return view
@@ -233,12 +272,17 @@ def section_view(item: dict[str, Any], section: str, store: LibraryStore) -> dis
     if section == "tags":
         return tags_home_view(item_id)
     if section.startswith("tag:"):
-        bucket = section.split(":", 1)[1]
+        raw = section.split(":", 1)[1]
+        bucket, _, sub = raw.partition("/")
         if bucket not in BUCKET_IDS:
             return tags_home_view(item_id)
         choices = store.list_tags(bucket)
         selected = {int(t["id"]) for t in (item.get("tags") or []) if t.get("bucket") == bucket}
-        return tag_bucket_view(item_id, bucket, choices, selected)
+        if "/" in raw:
+            choices = [tag for tag in choices if _tag_sub(tag["name"]) == sub]
+        elif len(choices) > 24 and (AXIS_SUBS.get(bucket) or []):
+            return tag_sub_view(item_id, bucket, choices, selected)
+        return tag_bucket_view(item_id, bucket, choices, selected, sub=sub)
     if section == "license":
         return license_view(item_id, item)
     if section == "rec":
