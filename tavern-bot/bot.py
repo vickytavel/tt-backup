@@ -16,6 +16,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parent))
 import discord
 from discord import ChannelType, ForumChannel, InteractionType
 
+from tavernlib import tagging
 from tavernlib.classify import classify
 from tavernlib.discord_form import (
     apply_modal,
@@ -576,6 +577,8 @@ class TavernBot(discord.Client):
             discord=discord_meta,
         )
         item_id = int(item["id"])
+        if created and result.type == "character" and tagging.auto_enabled() and tagging.is_configured():
+            asyncio.create_task(asyncio.to_thread(self._auto_tag, item_id))
         if intro_id:
             try:
                 self.store.update_fields(item_id, source_intro_id=intro_id)
@@ -616,6 +619,21 @@ class TavernBot(discord.Client):
             reason=result.reason,
         )
         return line, item_id
+
+    def _auto_tag(self, item_id: int) -> None:
+        """入库后异步打标；失败只记日志，不阻塞入库。"""
+        try:
+            item = self.store.get_enriched(item_id)
+            if not item:
+                return
+            result = tagging.suggest(item, self.store.pieces(item_id, with_text=True))
+            if result["tags"]:
+                tagging.apply(self.store, item_id, result["tags"])
+                LOG.info("Auto-tagged %s with %d tags", item_id, len(result["tags"]))
+            if result["dropped"]:
+                LOG.info("Auto-tag dropped for %s: %s", item_id, result["dropped"])
+        except Exception:
+            LOG.exception("Auto tagging failed for item %s", item_id)
 
     async def _file_in_forum(
         self,

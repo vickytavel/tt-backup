@@ -13,6 +13,7 @@ from urllib.parse import parse_qs, urlparse
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 
+from tavernlib import tagging
 from tavernlib.import_st import ImportError_, import_item
 from tavernlib.paths import ALLOWED_ORIGIN, LIBRARY_ROOT, RESOURCE_TYPES
 from tavernlib.store import LibraryStore
@@ -264,6 +265,30 @@ class LibHandler(BaseHTTPRequestHandler):
                     self._send_json(500, {"ok": False, "message": "保存失败"})
                     return
                 self._send_json(200, {"ok": True, "tags": result})
+                return
+        if path.startswith(prefix) and path.endswith("/tag-suggest"):
+            mid = path[len(prefix) : -len("/tag-suggest")]
+            if mid.isdigit():
+                body = self._read_json_body()
+                item = STORE.get_enriched(int(mid))
+                if not item:
+                    self._send_json(404, {"ok": False, "message": "找不到这条资源"})
+                    return
+                try:
+                    result = tagging.suggest(item, STORE.pieces(int(mid), with_text=True))
+                except tagging.TaggingError as exc:
+                    self._send_json(400, {"ok": False, "message": str(exc)})
+                    return
+                except Exception:
+                    self._send_json(500, {"ok": False, "message": "打标失败，请稍后重试"})
+                    return
+                if body.get("apply") and result["tags"]:
+                    try:
+                        tagging.apply(STORE, int(mid), result["tags"])
+                    except Exception:
+                        self._send_json(500, {"ok": False, "message": "标签写入失败"})
+                        return
+                self._send_json(200, {"ok": True, **result})
                 return
         if path.startswith(prefix) and path.endswith("/import"):
             mid = path[len(prefix) : -len("/import")]
