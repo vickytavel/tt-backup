@@ -89,6 +89,46 @@ class TaggingTest(unittest.TestCase):
         self.assertEqual(received["assignments"], [{"bucket": "world", "name": "现代"}])
         self.assertEqual(received["kwargs"]["source"], "ai")
 
+    def test_call_sends_configured_user_agent(self):
+        """WAF-fronted proxies reject the default Python UA, so it must be explicit."""
+        seen: dict[str, str] = {}
+
+        class FakeResponse:
+            def __enter__(self):
+                return self
+
+            def __exit__(self, *exc):
+                return False
+
+            def read(self):
+                return b'{"choices":[{"message":{"content":"[]"}}]}'
+
+        def fake_urlopen(request, timeout=None):
+            seen["ua"] = request.get_header("User-agent")
+            seen["auth"] = request.get_header("Authorization")
+            seen["url"] = request.full_url
+            return FakeResponse()
+
+        env = {
+            "TAVERN_LLM_BASE_URL": "https://example.test/v1",
+            "TAVERN_LLM_MODEL": "test-model",
+            "TAVERN_LLM_API_KEY": "k-123",
+            "TAVERN_LLM_USER_AGENT": "opencode/1.0",
+        }
+        with mock.patch.dict(os.environ, env), mock.patch(
+            "tavernlib.tagging.urllib.request.urlopen", fake_urlopen
+        ):
+            tagging._call([{"role": "user", "content": "hi"}])
+
+        self.assertEqual(seen["ua"], "opencode/1.0")
+        self.assertEqual(seen["auth"], "Bearer k-123")
+        self.assertTrue(seen["url"].endswith("/v1/chat/completions"))
+
+    def test_user_agent_defaults_when_unset(self):
+        with mock.patch.dict(os.environ, {}, clear=False):
+            os.environ.pop("TAVERN_LLM_USER_AGENT", None)
+            self.assertEqual(tagging.config()["user_agent"], tagging.DEFAULT_USER_AGENT)
+
 
 if __name__ == "__main__":
     unittest.main()
