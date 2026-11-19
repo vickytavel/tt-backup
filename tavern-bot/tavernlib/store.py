@@ -16,6 +16,8 @@ from typing import Any, Iterator
 
 from .fragments import extract_fragments
 from .paths import CATALOG_ONLY_TYPES, IMPORTABLE_TYPES, LIBRARY_ROOT, TYPE_FOLDERS
+
+logger = logging.getLogger(__name__)
 from .taxonomy import (
     BUCKET_IDS,
     LICENSE_FIELDS,
@@ -573,7 +575,9 @@ class LibraryStore:
             try:
                 self.replace_fragments(item_id, extract_fragments(data, typ))
             except Exception:
-                pass
+                logger.warning(
+                    "fragment indexing failed for item %s (type=%s)", item_id, typ, exc_info=True
+                )
         item = self.get(item_id)
         assert item is not None
         return item, True
