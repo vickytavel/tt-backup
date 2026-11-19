@@ -17,6 +17,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parent))
 import discord
 from discord import ChannelType, ForumChannel, InteractionType
 
+from tavernlib import tagging
 from tavernlib.classify import Classification, classify
 from tavernlib.discord_form import (
     apply_modal,
@@ -359,20 +360,23 @@ class TavernBot(discord.Client):
         except discord.HTTPException:
             LOG.warning("Could not sync forum tags for thread")
 
-    def _ingest_attachments(self, message: discord.Message) -> list[discord.Attachment]:
+    def _snapshot_attachments(self, message: discord.Message) -> list[discord.Attachment]:
+        found: list[discord.Attachment] = []
+        for snap in getattr(message, "message_snapshots", None) or []:
+            found.extend(list(getattr(snap, "attachments", None) or []))
+        return found
+
+    def _own_attachments(self, message: discord.Message) -> list[discord.Attachment]:
+        """Attachments the user uploaded here, excluding anything that came from a forward."""
+        snap_ids = {str(a.id) for a in self._snapshot_attachments(message) if getattr(a, "id", None)}
         found: list[discord.Attachment] = []
         seen: set[str] = set()
-        snapshots = list(getattr(message, "message_snapshots", None) or [])
-        groups: list[list[discord.Attachment]] = [list(message.attachments or [])]
-        for snap in snapshots:
-            groups.append(list(getattr(snap, "attachments", None) or []))
-        for group in groups:
-            for att in group:
-                key = (getattr(att, "id", None) and str(att.id)) or (att.url or att.filename or "")
-                if not key or key in seen:
-                    continue
-                seen.add(key)
-                found.append(att)
+        for att in message.attachments or []:
+            key = str(getattr(att, "id", None) or att.url or att.filename or "")
+            if not key or key in seen or key in snap_ids:
+                continue
+            seen.add(key)
+            found.append(att)
         return found
 
     def _ingest_note(self, message: discord.Message) -> str:
@@ -406,9 +410,63 @@ class TavernBot(discord.Client):
             return True
         return _forum_channel_of(message) is not None
 
+    async def _remember_intro(self, message: discord.Message, *, author: str, text: str) -> None:
+        """Store a forwarded author blurb so the card can pick it up later."""
+        assets = [
+            {"filename": a.filename or "", "url": a.url or a.proxy_url or ""}
+            for a in self._snapshot_attachments(message)
+        ]
+        guild = message.guild
+        try:
+            self.store.save_intro(
+                message_id=str(message.id),
+                guild_id=str(guild.id) if guild else "",
+                channel_id=str(getattr(message.channel, "id", "") or ""),
+                author=author,
+                text=text,
+                assets=assets,
+                jump_url=message.jump_url,
+            )
+        except Exception:
+            LOG.exception("Failed to remember intro %s", message.id)
+            return
+        try:
+            await message.reply(
+                f"简介已记录，{len(assets)} 张配图一并存档。拿到角色卡后回复这条消息上传，就会挂到这篇简介上。",
+                mention_author=False,
+            )
+        except discord.HTTPException:
+            pass
+
+    def _resolve_intro(self, message: discord.Message) -> dict | None:
+        """Return the blurb this message is replying to, if any."""
+        ref = message.reference
+        if ref is None:
+            return None
+        resolved = getattr(ref, "resolved", None)
+        message_id = getattr(ref, "message_id", None)
+        if not message_id and isinstance(resolved, discord.Message):
+            message_id = resolved.id
+        if not message_id:
+            return None
+        stored = self.store.get_intro(str(message_id))
+        if stored:
+            return stored
+        if isinstance(resolved, discord.Message):
+            text = self._ingest_note(resolved)
+            if text:
+                return {
+                    "message_id": str(message_id),
+                    "text": text,
+                    "jump_url": resolved.jump_url,
+                    "assets": [],
+                }
+        return None
+
     async def on_message(self, message: discord.Message) -> None:
         if message.author.bot:
             return
+
         attachments = self._ingest_attachments(message)
         if not attachments:
             if self._is_direct_request(message):
@@ -473,6 +531,7 @@ class TavernBot(discord.Client):
         cached_note = self._cached_note(message)
         own_note = self._ingest_note(message)
         note = _merge_note(cached_note, own_note)
+        intro_id = ""
         author = f"{message.author.display_name} ({message.author.id})"
         channel_name = ""
         if guild is not None and not isinstance(message.channel, discord.DMChannel):
@@ -482,10 +541,15 @@ class TavernBot(discord.Client):
             else:
                 channel_name = getattr(message.channel, "name", "") or ""
 
-        LOG.info("Ingesting %s file(s) from %s", len(attachments), author)
+        LOG.info("Ingesting %s upload(s) from %s (intro=%s)", len(attachments), author, bool(intro_id))
         for attachment in attachments:
             line, item_id = await self._handle_attachment(
-                message, attachment, note=note, author=author, channel_name=channel_name
+                message,
+                attachment,
+                note=note,
+                author=author,
+                channel_name=channel_name,
+                intro_id=intro_id,
             )
             results.append(line)
             if item_id:
@@ -510,11 +574,12 @@ class TavernBot(discord.Client):
             )
 
         text = "\n".join(results) if results else "没有可入库的附件。"
+        reply = text
         try:
-            await message.reply(text, mention_author=False)
+            await message.reply(reply, mention_author=False)
         except discord.HTTPException:
             try:
-                await message.channel.send(text)
+                await message.channel.send(reply)
             except discord.HTTPException:
                 LOG.exception("Failed to send ingest reply")
 
@@ -526,6 +591,7 @@ class TavernBot(discord.Client):
         note: str,
         author: str,
         channel_name: str,
+        intro_id: str = "",
     ) -> tuple[str, int | None]:
         filename = attachment.filename or "unnamed"
         if attachment.size and attachment.size > MAX_ATTACHMENT_BYTES:
@@ -576,6 +642,13 @@ class TavernBot(discord.Client):
             discord=discord_meta,
         )
         item_id = int(item["id"])
+        if created and result.type == "character" and tagging.auto_enabled() and tagging.is_configured():
+            asyncio.create_task(asyncio.to_thread(self._auto_tag, item_id))
+        if intro_id:
+            try:
+                self.store.update_fields(item_id, source_intro_id=intro_id)
+            except Exception:
+                LOG.exception("Failed to link item %s to intro %s", item_id, intro_id)
 
         jump = item.get("discord_jump_url") or ""
         existing_thread = bool(item.get("discord_thread_id")) and not created
@@ -611,6 +684,21 @@ class TavernBot(discord.Client):
             reason=result.reason,
         )
         return line, item_id
+
+    def _auto_tag(self, item_id: int) -> None:
+        """入库后异步打标；失败只记日志，不阻塞入库。"""
+        try:
+            item = self.store.get_enriched(item_id)
+            if not item:
+                return
+            result = tagging.suggest(item, self.store.pieces(item_id, with_text=True))
+            if result["tags"]:
+                tagging.apply(self.store, item_id, result["tags"])
+                LOG.info("Auto-tagged %s with %d tags", item_id, len(result["tags"]))
+            if result["dropped"]:
+                LOG.info("Auto-tag dropped for %s: %s", item_id, result["dropped"])
+        except Exception:
+            LOG.exception("Auto tagging failed for item %s", item_id)
 
     async def _file_in_forum(
         self,
@@ -908,7 +996,8 @@ class TavernBot(discord.Client):
                 asyncio.create_task(self.post_or_refresh_form(item_id))
             return
         if action == "tagsel":
-            item = apply_tag_select(store, item, extra, select_values(interaction)) or item
+            bucket = extra.split("/", 1)[0]
+            item = apply_tag_select(store, item, bucket, select_values(interaction)) or item
             await edit_form(interaction, item, store, f"tag:{extra}")
             asyncio.create_task(self.post_or_refresh_form(item_id))
             return
@@ -924,7 +1013,7 @@ class TavernBot(discord.Client):
             elif extra.startswith("tag:"):
                 section = extra
             elif extra == "basic":
-                section = "tag:basic"
+                section = "tag:character"
             elif extra == "licnote":
                 section = "license"
             elif extra.startswith("link") or extra.startswith("linkadd") or extra == "linkdel":

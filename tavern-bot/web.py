@@ -13,6 +13,7 @@ from urllib.parse import parse_qs, urlparse
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 
+from tavernlib import tagging
 from tavernlib.import_st import ImportError_, import_item, import_set
 from tavernlib.paths import ALLOWED_ORIGIN, LIBRARY_ROOT, RESOURCE_TYPES
 from tavernlib.store import LibraryStore
@@ -86,6 +87,7 @@ def public_item(item: dict, *, enrich: bool = True) -> dict:
         "tags": data.get("tags") or [],
         "links": data.get("links") or [],
         "fragments": data.get("fragments") or [],
+        "pieces": data.get("pieces") or [],
         "ai_prefill": data.get("ai_prefill"),
     }
 
@@ -201,6 +203,26 @@ class LibHandler(BaseHTTPRequestHandler):
             )
             self._send_json(200, {"ok": True, "items": [public_item(it, enrich=False) for it in items]})
             return
+        if path == f"{PREFIX}/api/pieces":
+            qs = parse_qs(parsed.query)
+            query = (qs.get("q") or [""])[0]
+            kind = (qs.get("kind") or [""])[0] or None
+            limit = int((qs.get("limit") or ["50"])[0] or 50)
+            if not query.strip():
+                self._send_json(400, {"ok": False, "message": "缺少 q"})
+                return
+            rows = STORE.search_pieces(query, kind=kind, limit=limit)
+            self._send_json(200, {"ok": True, "pieces": rows})
+            return
+        if path.startswith(f"{PREFIX}/api/pieces/"):
+            rest = path[len(f"{PREFIX}/api/pieces/") :]
+            if rest.isdigit():
+                piece = STORE.piece(int(rest))
+                if not piece:
+                    self._send_json(404, {"ok": False, "message": "找不到这个片段"})
+                    return
+                self._send_json(200, {"ok": True, "piece": piece})
+                return
         if path.startswith(f"{PREFIX}/api/items/"):
             rest = path[len(f"{PREFIX}/api/items/") :]
             if rest.isdigit():
@@ -228,6 +250,46 @@ class LibHandler(BaseHTTPRequestHandler):
             return
         path = normalize_path(self.path)
         prefix = f"{PREFIX}/api/items/"
+        pieces_prefix = f"{PREFIX}/api/pieces/"
+        if path.startswith(pieces_prefix) and path.endswith("/tags"):
+            pid = path[len(pieces_prefix) : -len("/tags")]
+            if pid.isdigit():
+                body = self._read_json_body()
+                tags = body.get("tags") or []
+                if not isinstance(tags, list):
+                    self._send_json(400, {"ok": False, "message": "tags 必须是数组"})
+                    return
+                try:
+                    result = STORE.set_piece_tags(int(pid), tags, replace=bool(body.get("replace", True)))
+                except Exception:
+                    self._send_json(500, {"ok": False, "message": "保存失败"})
+                    return
+                self._send_json(200, {"ok": True, "tags": result})
+                return
+        if path.startswith(prefix) and path.endswith("/tag-suggest"):
+            mid = path[len(prefix) : -len("/tag-suggest")]
+            if mid.isdigit():
+                body = self._read_json_body()
+                item = STORE.get_enriched(int(mid))
+                if not item:
+                    self._send_json(404, {"ok": False, "message": "找不到这条资源"})
+                    return
+                try:
+                    result = tagging.suggest(item, STORE.pieces(int(mid), with_text=True))
+                except tagging.TaggingError as exc:
+                    self._send_json(400, {"ok": False, "message": str(exc)})
+                    return
+                except Exception:
+                    self._send_json(500, {"ok": False, "message": "打标失败，请稍后重试"})
+                    return
+                if body.get("apply") and result["tags"]:
+                    try:
+                        tagging.apply(STORE, int(mid), result["tags"])
+                    except Exception:
+                        self._send_json(500, {"ok": False, "message": "标签写入失败"})
+                        return
+                self._send_json(200, {"ok": True, **result})
+                return
         if path.startswith(prefix) and path.endswith("/import"):
             mid = path[len(prefix) : -len("/import")]
             if mid.isdigit():
