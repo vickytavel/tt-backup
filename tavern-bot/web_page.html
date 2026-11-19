@@ -407,6 +407,9 @@
         importHint = "这类资源不能一键导入酒馆。聊天记录不会导入；正则脚本也不会写入设置。";
       } else if (canImport) {
         importHint = "导入会复制到酒馆对应的文件夹，遇到重名会自动加 _2、_3 这样的后缀，不会覆盖已有文件。导入后请刷新酒馆页面再查看。";
+        if (it.type === "character") {
+          importHint += "「应用整套」会把关联的世界书和快速回复（QR）一并复制过去；预设不会随整套导入。";
+        }
       }
       const hero = hasThumb(it)
         ? `<div class="hero"><img src="${escapeAttr(thumbSrc(it))}" alt=""></div>`
@@ -421,6 +424,11 @@
         ? (imported
             ? `<button type="button" class="action again" id="btn-import">再次导入（使用新文件名）</button>`
             : `<button type="button" class="action" id="btn-import">导入酒馆</button>`)
+        : "";
+      const setBtn = canImport && it.type === "character"
+        ? (imported
+            ? `<button type="button" class="action again" id="btn-import-set">再次应用整套（新文件名）</button>`
+            : `<button type="button" class="action" id="btn-import-set">应用整套到酒馆</button>`)
         : "";
       const download = (it.catalog_only || !it.original_filename && it.type === "imagegen")
         ? ""
@@ -454,6 +462,7 @@
         <p class="msg" id="detail-msg"></p>
         <div class="btns">
           ${importBtn}
+          ${setBtn}
           <button type="button" class="action again" id="btn-edit">编辑元数据</button>
           ${download}
           <button type="button" class="action ghost" id="close2">关闭</button>
@@ -462,6 +471,8 @@
       document.getElementById("close2").onclick = closeDetail;
       const btn = document.getElementById("btn-import");
       if (btn) btn.addEventListener("click", () => doImport(it, imported));
+      const sbtn = document.getElementById("btn-import-set");
+      if (sbtn) sbtn.addEventListener("click", () => doImportSet(it, imported));
       document.getElementById("btn-edit").onclick = () => renderEditor(it);
       panel.querySelectorAll(".link-jump").forEach((a) => {
         a.addEventListener("click", (e) => {
@@ -590,6 +601,44 @@
           text = `已复制为「${data.dest_name}」到酒馆的「User Avatars」。请到酒馆里自行添加或选择这张面具，当前设置不会被改动。`;
         }
         showMsg(msg, text, "ok");
+        await load();
+        const r = await fetch("/_lib/api/items/" + it.id, { credentials: "same-origin" });
+        const d = await r.json();
+        if (d.item) renderDetail(d.item);
+      } catch (err) {
+        showMsg(msg, err.message, "err");
+        if (btn) btn.disabled = false;
+      }
+    }
+
+    async function doImportSet(it, again) {
+      const msg = document.getElementById("detail-msg");
+      if (again) {
+        const ok = window.confirm("再次应用整套会使用新的文件名，不会覆盖已有文件。确定吗？");
+        if (!ok) return;
+      }
+      const btn = document.getElementById("btn-import-set");
+      if (btn) btn.disabled = true;
+      showMsg(msg, "正在应用整套…", "warn");
+      try {
+        const res = await fetch("/_lib/api/items/" + it.id + "/import-set", {
+          method: "POST",
+          credentials: "same-origin",
+          headers: { "Accept": "application/json", "Content-Type": "application/json" },
+          body: JSON.stringify({ confirm: !!again }),
+        });
+        const data = await res.json().catch(() => ({}));
+        if (!res.ok || data.ok === false) throw new Error(data.message || "应用失败，请稍后重试。");
+        const parts = [];
+        const line = (e, label) => {
+          if (e.status === "imported") return `${label}「${e.title}」→ ${e.dest_dir}/${e.dest_name}`;
+          if (e.status === "already") return `${label}「${e.title}」${e.reason || "已导入过，跳过"}`;
+          if (e.status === "skipped") return `未导入「${e.title}」（${e.reason}）`;
+          return `${label}「${e.title}」失败：${e.reason || "未知错误"}`;
+        };
+        if (data.anchor) parts.push(line(data.anchor, "本体"));
+        for (const m of data.members || []) parts.push(line(m, "关联"));
+        showMsg(msg, "整套应用完成，请刷新酒馆页面。" + parts.join("；"), "ok");
         await load();
         const r = await fetch("/_lib/api/items/" + it.id, { credentials: "same-origin" });
         const d = await r.json();

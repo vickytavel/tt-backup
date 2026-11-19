@@ -224,6 +224,30 @@ class ClassifyTests(unittest.TestCase):
         result = classify(json.dumps(obj).encode(), filename="qr.json")
         self.assertEqual((result.type, result.subtype), ("preset", "quick-replies"))
 
+    def test_quick_replies_v2_set(self):
+        obj = {
+            "version": 2,
+            "name": "桑洛凡QR",
+            "disableSend": False,
+            "qrList": [
+                {
+                    "id": 2,
+                    "label": "桑·线上消息",
+                    "message": "/sendas name={{char}}",
+                    "preventAutoExecute": True,
+                }
+            ],
+        }
+        result = classify(json.dumps(obj, ensure_ascii=False).encode(), filename="QR_1.json")
+        self.assertIsNotNone(result)
+        self.assertEqual((result.type, result.subtype), ("preset", "quick-replies"))
+        self.assertEqual(result.title, "桑洛凡QR")
+        self.assertTrue(result.importable)
+
+    def test_qr_set_with_empty_list_is_not_qr(self):
+        result = classify_json_obj({"version": 2, "name": "空", "qrList": []}, filename="x.json")
+        self.assertTrue(result is None or result.subtype != "quick-replies")
+
     def test_theme_json(self):
         obj = {
             "name": "Dark Lite",

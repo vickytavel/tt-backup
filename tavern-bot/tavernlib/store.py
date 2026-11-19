@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import logging
 import os
 import shutil
 import sqlite3
@@ -15,6 +16,8 @@ from typing import Any, Iterator
 
 from .fragments import extract_fragments
 from .paths import CATALOG_ONLY_TYPES, IMPORTABLE_TYPES, LIBRARY_ROOT, TYPE_FOLDERS
+
+logger = logging.getLogger(__name__)
 from .taxonomy import (
     BUCKET_IDS,
     LICENSE_FIELDS,
@@ -572,7 +575,9 @@ class LibraryStore:
             try:
                 self.replace_fragments(item_id, extract_fragments(data, typ))
             except Exception:
-                pass
+                logger.warning(
+                    "fragment indexing failed for item %s (type=%s)", item_id, typ, exc_info=True
+                )
         item = self.get(item_id)
         assert item is not None
         return item, True
@@ -791,6 +796,19 @@ class LibraryStore:
                         (b, a),
                     )
         return bid
+
+    def list_bundle(self, bundle_id: str) -> list[dict[str, Any]]:
+        """All items sharing one bundle id (including ones without explicit links)."""
+        if not bundle_id:
+            return []
+        with self._connect() as conn:
+            return [
+                dict(r)
+                for r in conn.execute(
+                    "SELECT * FROM items WHERE bundle_id = ? ORDER BY id",
+                    (bundle_id,),
+                )
+            ]
 
     # --- tags / themes / links / fragments ---------------------------------
 

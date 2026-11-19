@@ -13,7 +13,7 @@ from urllib.parse import parse_qs, urlparse
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 
-from tavernlib.import_st import ImportError_, import_item
+from tavernlib.import_st import ImportError_, import_item, import_set
 from tavernlib.paths import ALLOWED_ORIGIN, LIBRARY_ROOT, RESOURCE_TYPES
 from tavernlib.store import LibraryStore
 from tavernlib.taxonomy import LICENSE_FIELDS
@@ -259,6 +259,19 @@ class LibHandler(BaseHTTPRequestHandler):
                         self._send_json(400, {"ok": False, "message": text})
                 except Exception:
                     self._send_json(500, {"ok": False, "message": "导入失败，请稍后重试。"})
+                return
+        if path.startswith(prefix) and path.endswith("/import-set"):
+            mid = path[len(prefix) : -len("/import-set")]
+            if mid.isdigit():
+                body = self._read_json_body()
+                confirm = bool(body.get("confirm"))
+                try:
+                    result = import_set(STORE, int(mid), confirm_again=confirm)
+                    self._send_json(200, result)
+                except ImportError_ as exc:
+                    self._send_json(400, {"ok": False, "message": str(exc)})
+                except Exception:
+                    self._send_json(500, {"ok": False, "message": "应用失败，请稍后重试。"})
                 return
         if path.startswith(prefix):
             mid = path[len(prefix) :]
