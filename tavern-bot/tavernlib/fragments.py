@@ -8,10 +8,14 @@ by explicit linking, not automatically here.
 from __future__ import annotations
 
 import json
+import logging
 import re
 from typing import Any
 
+from .pngutil import is_png, read_chara_json
 from .taxonomy import FRAGMENT_KIND_LABELS, MAX_TEXT
+
+logger = logging.getLogger(__name__)
 
 STYLE_MARKERS = ("文风", "文笔", "写作风格", "行文", "语风", "描写风格", "writing style", "prose style", "narration style")
 RULE_MARKERS = ("规则", "玩法", "合规", "禁限", "禁忌", "rule", "ruleset", "gameplay")
@@ -19,18 +23,46 @@ SETTING_MARKERS = ("设定", "世界观", "lore", "background setting", "world s
 CHARACTER_MARKERS = ("角色补充", "角色设定", "人物", "character info", "character note")
 
 
-def _loads(data: bytes | str) -> Any | None:
+def _text_from_bytes(data: bytes) -> str | None:
+    for enc in ("utf-8-sig", "utf-8"):
+        try:
+            return data.decode(enc)
+        except UnicodeDecodeError:
+            continue
+    return None
+
+
+def _card_json_from_bytes(data: bytes) -> str | None:
+    """Return the card JSON embedded in a PNG card or a CharX archive."""
+    if is_png(data):
+        return read_chara_json(data)
+    if data[:2] == b"PK":
+        # Imported lazily: classify pulls in pngutil but never fragments.
+        from .classify import read_charx_card
+
+        parsed = read_charx_card(data)
+        if parsed:
+            return parsed[0]
+    return None
+
+
+def _loads(data: bytes | str | dict) -> Any | None:
+    """Parse a stored file into a JSON object.
+
+    The library keeps uploaded files byte-for-byte, so a character card reaches
+    this function as PNG bytes (chara/ccv3 chunk) or as a CharX zip. Neither is
+    UTF-8 text, which is why a decode-only parser silently returned nothing for
+    every PNG card in the library.
+    """
+    if isinstance(data, dict):
+        return data
+    text: str | None
     if isinstance(data, bytes):
-        for enc in ("utf-8-sig", "utf-8"):
-            try:
-                text = data.decode(enc)
-                break
-            except UnicodeDecodeError:
-                text = None
-        else:
-            return None
+        text = _card_json_from_bytes(data) or _text_from_bytes(data)
     else:
         text = data
+    if not isinstance(text, str):
+        return None
     try:
         return json.loads(text)
     except (ValueError, TypeError):
@@ -135,6 +167,78 @@ def fragments_from_character_book(obj: dict) -> list[dict[str, str]]:
     return frags
 
 
+CARD_TEXT_FIELDS = (
+    ("description", "角色描述"),
+    ("personality", "性格"),
+    ("scenario", "场景"),
+    ("first_mes", "开场白"),
+    ("mes_example", "对话示例"),
+    ("system_prompt", "系统提示"),
+    ("post_history_instructions", "后置指令"),
+)
+
+
+def fragments_from_character_card(obj: dict) -> list[dict[str, str]]:
+    """Index the card body itself, not only its embedded worldbook."""
+    data = obj.get("data") if isinstance(obj.get("data"), dict) else obj
+    if not isinstance(data, dict):
+        return []
+    name = str(data.get("name") or obj.get("name") or "").strip()
+    results: list[dict[str, str]] = []
+    for field_name, label in CARD_TEXT_FIELDS:
+        body = data.get(field_name)
+        if not isinstance(body, str) or not body.strip():
+            continue
+        title = f"{name}·{label}" if name else label
+        results.append(
+            {
+                "kind": _kind_from_text(title, body[:400]),
+                "title": title[:80],
+                "excerpt": _excerpt(body),
+                "source_ref": f"card:{field_name}",
+            }
+        )
+    return results
+
+
+def fragments_from_character_regex(obj: dict) -> list[dict[str, str]]:
+    """One summary fragment listing the card's embedded regex scripts.
+
+    A card can ship a dozen SCOPED scripts (status bars, chat screens, message
+    types). Indexing them one by one buries the worldbook entries, so the names
+    go into a single searchable fragment: searching "状态栏" still hits the card.
+    """
+    data = obj.get("data") if isinstance(obj.get("data"), dict) else obj
+    if not isinstance(data, dict):
+        return []
+    extensions = data.get("extensions")
+    if not isinstance(extensions, dict):
+        return []
+    scripts = extensions.get("regex_scripts")
+    if not isinstance(scripts, list) or not scripts:
+        return []
+    names: list[str] = []
+    for script in scripts:
+        if not isinstance(script, dict):
+            continue
+        label = str(script.get("scriptName") or script.get("findRegex") or "").strip()
+        if label:
+            names.append(label[:40])
+    if not names:
+        return []
+    name = str(data.get("name") or obj.get("name") or "").strip()
+    title = f"{name}·内嵌正则" if name else "内嵌正则"
+    body = f"内嵌 {len(scripts)} 条正则脚本：" + "、".join(names)
+    return [
+        {
+            "kind": _kind_from_text(title, body[:400]),
+            "title": title[:80],
+            "excerpt": _excerpt(body),
+            "source_ref": "card:regex_scripts",
+        }
+    ]
+
+
 _HEADER_RE = re.compile(r"^(?:#{1,4}\s+|【|\[)(.+?)(?:】|\])?\s*$", re.MULTILINE)
 
 
@@ -185,7 +289,35 @@ def fragments_from_preset(obj: dict) -> list[dict[str, str]]:
     return results
 
 
-def extract_fragments(data: bytes | str | dict, typ: str) -> list[dict[str, str]]:
+def fragments_from_qr_set(obj: dict) -> list[dict[str, str]]:
+    """SillyTavern Quick Reply sets are stored as {'qrList': [...]}."""
+    entries = obj.get("qrList")
+    if entries is None:
+        entries = obj.get("qrs")
+    if not isinstance(entries, list):
+        return []
+    set_name = str(obj.get("name") or "").strip()
+    results: list[dict[str, str]] = []
+    for i, qr in enumerate(entries):
+        if not isinstance(qr, dict):
+            continue
+        message = qr.get("message")
+        if not isinstance(message, str) or not message.strip():
+            continue
+        label = str(qr.get("label") or qr.get("title") or f"QR {i}").strip()
+        title = f"{set_name}·{label}" if set_name else label
+        results.append(
+            {
+                "kind": _kind_from_text(title, message[:400]),
+                "title": title[:80],
+                "excerpt": _excerpt(message),
+                "source_ref": f"qr:{label[:60] or i}",
+            }
+        )
+    return results
+
+
+def _extract_fragments(data: bytes | str | dict, typ: str) -> list[dict[str, str]]:
     """Return fragment dicts for a stored file. Safe on unrecognized input."""
     obj: Any
     if isinstance(data, dict):
@@ -199,9 +331,12 @@ def extract_fragments(data: bytes | str | dict, typ: str) -> list[dict[str, str]
     if typ == "world":
         results.extend(fragments_from_world(obj))
     elif typ == "character":
+        results.extend(fragments_from_character_card(obj))
+        results.extend(fragments_from_character_regex(obj))
         results.extend(fragments_from_character_book(obj))
     elif typ in {"preset", "style"}:
         results.extend(fragments_from_preset(obj))
+        results.extend(fragments_from_qr_set(obj))
         # A world-shaped object mis-filed as style/preset should still be searchable.
         if "entries" in obj:
             results.extend(fragments_from_world(obj))
@@ -230,3 +365,16 @@ def extract_fragments(data: bytes | str | dict, typ: str) -> list[dict[str, str]
         if len(cleaned) >= 80:
             break
     return cleaned
+
+
+def extract_fragments(data: bytes | str | dict, typ: str) -> list[dict[str, str]]:
+    """Public entry point.
+
+    Indexing is a convenience: a malformed card must never block an upload, and
+    the failure must be logged rather than silently swallowed.
+    """
+    try:
+        return _extract_fragments(data, typ)
+    except Exception:
+        logger.warning("fragment extraction failed (type=%s)", typ, exc_info=True)
+        return []
