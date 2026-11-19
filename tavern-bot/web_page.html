@@ -182,7 +182,8 @@
       ["license_tavern", "酒馆使用"],
       ["license_phone", "小手机使用"],
     ];
-    const BUCKET_LABEL = { genre: "题材", world: "世界观", license: "许可", recommend: "推荐", basic: "基础信息", purpose: "用途" };
+    let BUCKET_LABEL = {};
+    let SCOPE_LABEL = {};
     const LINK_LABEL = {
       character_worldbook: "角色卡 ↔ 世界书",
       worldbook_extra: "世界书 ↔ 番外",
@@ -268,6 +269,8 @@
       const bucketSel = document.getElementById("bucket");
       const current = bucketSel.value;
       bucketSel.innerHTML = '<option value="">全部标签类别</option>';
+      BUCKET_LABEL = Object.fromEntries((taxonomy.buckets || []).map((b) => [b.id, b.label]));
+      SCOPE_LABEL = Object.fromEntries((taxonomy.scopes || []).map((s) => [s.id, s.label]));
       (taxonomy.buckets || []).forEach((b) => {
         const opt = document.createElement("option");
         opt.value = b.id; opt.textContent = b.label;
@@ -377,7 +380,8 @@
     }
     function tagChips(it) {
       return (it.tags || []).map((t) => {
-        const lab = (BUCKET_LABEL[t.bucket] || t.bucket) + ":" + t.name;
+        const lab = (BUCKET_LABEL[t.bucket] || t.bucket) + ":" + t.name
+          + (t.scope && t.scope !== "卡片" ? "（" + (SCOPE_LABEL[t.scope] || t.scope) + "）" : "");
         const cls = t.pending ? "mini-chip pending" : "mini-chip";
         return `<span class="${cls}">${escapeHtml(lab)}</span>`;
       }).join("");
@@ -503,7 +507,7 @@
           ${field("简介摘要", `<textarea class="field" id="e-summary" rows="3">${escapeHtml(it.summary || "")}</textarea>`)}
           ${field("备注", `<textarea class="field" id="e-note" rows="3">${escapeHtml(it.note || "")}</textarea>`)}
           ${field("主题分类（一行一条，例如 科幻/赛博朋克）", `<textarea class="field" id="e-themes" rows="2">${escapeHtml((it.themes || []).join("\n"))}</textarea>`)}
-          ${field("标签（一行一条，格式 类别:名称，类别为 genre/world/license/recommend/basic/purpose）", `<textarea class="field" id="e-tags" rows="4">${escapeHtml(tagText)}</textarea>`)}
+          ${field("标签（一行一条，格式 类别:名称，类别为 world/setting/gameplay/character/relation/plot/tone）", `<textarea class="field" id="e-tags" rows="4">${escapeHtml(tagText)}</textarea>`)}
           ${field("二传二改", `<select class="filter" id="e-lic-repost">${licOpts("license_repost")}</select>`)}
           ${field("酒馆使用", `<select class="filter" id="e-lic-tavern">${licOpts("license_tavern")}</select>`)}
           ${field("小手机使用", `<select class="filter" id="e-lic-phone">${licOpts("license_phone")}</select>`)}
@@ -519,18 +523,62 @@
         <p class="msg" id="detail-msg"></p>
         <div class="btns">
           <button type="button" class="action" id="btn-save">保存</button>
+          <button type="button" class="action ghost" id="btn-ai">AI 建议</button>
           <button type="button" class="action ghost" id="btn-back">返回详情</button>
         </div>`;
       document.getElementById("close").onclick = closeDetail;
       document.getElementById("btn-back").onclick = () => renderDetail(it);
+      document.getElementById("btn-ai").onclick = () => suggestTags(it);
       document.getElementById("btn-save").onclick = () => saveEdit(it);
+    }
+
+    async function suggestTags(it) {
+      const btn = document.getElementById("btn-ai");
+      const msg = document.getElementById("detail-msg");
+      btn.disabled = true;
+      showMsg(msg, "正在请求模型…", "warn");
+      try {
+        const res = await fetch("/_lib/api/items/" + it.id + "/tag-suggest", {
+          method: "POST",
+          credentials: "same-origin",
+          headers: { "Accept": "application/json", "Content-Type": "application/json" },
+          body: JSON.stringify({}),
+        });
+        const data = await res.json().catch(() => ({}));
+        if (!res.ok || data.ok === false) {
+          throw new Error(data.message || "打标失败，请稍后重试。");
+        }
+        const box = document.getElementById("e-tags");
+        const lines = new Set(box.value.split(/\n+/).map((s) => s.trim()).filter(Boolean));
+        let added = 0;
+        for (const tag of data.tags || []) {
+          const line = tag.bucket + ":" + tag.name;
+          if (!lines.has(line)) {
+            lines.add(line);
+            added += 1;
+          }
+        }
+        box.value = Array.from(lines).join("\n");
+        const dropped = (data.dropped || []).length;
+        showMsg(
+          msg,
+          `建议 ${(data.tags || []).length} 个，新增 ${added} 个` +
+            (dropped ? `，丢弃 ${dropped} 个（不在词表或已废弃）` : "") +
+            "。确认后点保存。",
+          "ok",
+        );
+      } catch (err) {
+        showMsg(msg, String(err.message || err), "warn");
+      } finally {
+        btn.disabled = false;
+      }
     }
 
     async function saveEdit(it) {
       const msg = document.getElementById("detail-msg");
       const tags = document.getElementById("e-tags").value.split(/\n+/).map((line) => line.trim()).filter(Boolean).map((line) => {
         const idx = line.indexOf(":");
-        if (idx === -1) return { bucket: "genre", name: line };
+        if (idx === -1) return { bucket: "plot", name: line };
         return { bucket: line.slice(0, idx).trim(), name: line.slice(idx + 1).trim() };
       });
       const payload = {

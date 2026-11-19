@@ -148,7 +148,7 @@ def format_form_text(item: dict[str, Any], *, section: str = "home") -> str:
     elif section == "theme":
         text = header + "请选择主题分类，可多选。没有的话可以点「自定义主题」填写路径，例如 科幻/赛博朋克。"
     elif section == "tags":
-        text = header + "请先选一个标签类别，再勾选或自定义。题材是小说类型（如 青梅竹马、强强）。你的修改优先于预填。"
+        text = header + "请先选一个标签维度，再勾选或自定义。维度固定为世界/设定/玩法/角色/关系/情节/氛围，词表外的标签会标为待确认。你的修改优先于预填。"
     elif section.startswith("tag:"):
         bucket = section.split(":", 1)[1]
         text = header + f"正在编辑「{BUCKET_LABELS.get(bucket, bucket)}」标签，可多选。没有的项目请点「自定义标签」。"

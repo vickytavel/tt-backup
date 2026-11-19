@@ -1,24 +1,51 @@
-"""Tag buckets, theme-category seeds, licenses, and link kinds.
+"""Tag axes and the controlled vocabulary (词库 v2.2).
 
-The bucket structure is locked. Tags live inside a bucket; unknown AI-invented
-tags are flagged 待确认. User corrections always win over heuristics/AI.
+The axis structure is fixed: seven axes (世界/设定/玩法/角色/关系/情节/氛围).
+Concrete tags live in `taglib.json`, imported verbatim from 酒馆标签词库-v2.2.xlsx.
+Tags outside the vocabulary may still be created by hand; tags produced by
+AI or heuristics are flagged 待确认, and user corrections always win.
 """
 
 from __future__ import annotations
 
-SCHEMA_VERSION = 2
+import json
+from pathlib import Path
 
-# Fixed tag buckets. Do not add informal buckets at runtime.
-TAG_BUCKETS: list[tuple[str, str]] = [
-    ("genre", "题材"),
-    ("world", "世界观"),
-    ("license", "许可"),
-    ("recommend", "推荐"),
-    ("basic", "基础信息"),
-    ("purpose", "用途"),
-]
+SCHEMA_VERSION = 5
+
+_TAGLIB_PATH = Path(__file__).with_name("taglib.json")
+with _TAGLIB_PATH.open(encoding="utf-8") as _fh:
+    TAGLIB: dict = json.load(_fh)
+
+# Fixed axes. Do not add informal axes at runtime.
+TAG_BUCKETS: list[tuple[str, str]] = [(a["id"], a["label"]) for a in TAGLIB["axes"]]
 BUCKET_LABELS = dict(TAG_BUCKETS)
 BUCKET_IDS = tuple(k for k, _ in TAG_BUCKETS)
+AXIS_SUBS: dict[str, list[str]] = {a["id"]: list(a.get("subs") or []) for a in TAGLIB["axes"]}
+
+# Controlled vocabulary, keyed by canonical name.
+TAG_RECORDS: dict[str, dict] = {t["name"]: t for t in TAGLIB["tags"]}
+TAG_BY_ID: dict[str, dict] = {t["id"]: t for t in TAGLIB["tags"]}
+TAG_ALIASES: dict[str, str] = {}
+for _tag in TAGLIB["tags"]:
+    for _alias in _tag.get("aliases") or []:
+        TAG_ALIASES[_alias] = _tag["name"]
+DEPRECATED_TAGS: frozenset[str] = frozenset(TAGLIB.get("deprecated") or [])
+
+# Enumerated card facts that are fields, not free tags.
+FIELD_ENUMS: dict[str, list[str]] = {k: list(v) for k, v in (TAGLIB.get("fields") or {}).items()}
+
+# Where a tag may be attached. Card tags also apply to single-character cards.
+SCOPE_LABELS: list[tuple[str, str]] = [
+    ("卡片", "卡片"),
+    ("开场白", "开场白"),
+    ("角色", "角色"),
+    ("卡片/开场白", "卡片 + 开场白"),
+    ("卡片/角色", "卡片 + 角色"),
+    ("角色/关系", "角色 + 关系"),
+]
+SCOPE_LABEL_MAP = dict(SCOPE_LABELS)
+SCOPE_IDS = tuple(k for k, _ in SCOPE_LABELS)
 
 LICENSE_FIELDS = [
     ("license_repost", "二传二改"),
@@ -55,32 +82,10 @@ THEME_SEEDS: dict[str, list[str]] = {
     "other": [],
 }
 
-# Modest starter tags. Not locked; users can add, merge, or blacklist later.
-SEED_TAGS: dict[str, list[str]] = {
-    "genre": [
-        "青梅竹马",
-        "强强",
-        "年上",
-        "年下",
-        "暗恋",
-        "重生",
-        "穿越",
-        "契约",
-        "校园",
-        "宫廷",
-        "修仙",
-        "机甲",
-        "娱乐圈",
-        "豪门",
-        "治愈",
-        "群像",
-    ],
-    "world": ["现代都市", "古代", "西幻世界", "科幻未来", "末世废土", "原著向"],
-    "purpose": ["对话", "叙事", "描写", "合规", "总结", "立绘", "场景", "头像"],
-    "basic": ["男", "女", "非二元", "成年"],
-    "license": [],
-    "recommend": [],
-}
+# Axis -> canonical tag names, kept for callers that only need the names.
+SEED_TAGS: dict[str, list[str]] = {axis: [] for axis in BUCKET_IDS}
+for _tag in TAGLIB["tags"]:
+    SEED_TAGS[_tag["axis"]].append(_tag["name"])
 
 LINK_KINDS: list[tuple[str, str]] = [
     ("character_worldbook", "角色卡 ↔ 世界书"),
@@ -136,6 +141,22 @@ def normalize_theme_path(path: str) -> str:
     return cleaned[:MAX_THEME_PATH]
 
 
+def resolve_tag(name: str) -> dict | None:
+    """Return the canonical vocabulary record for a name or alias, else None."""
+    cleaned = normalize_tag_name(name)
+    if not cleaned:
+        return None
+    record = TAG_RECORDS.get(cleaned)
+    if record:
+        return record
+    canonical = TAG_ALIASES.get(cleaned)
+    return TAG_RECORDS.get(canonical) if canonical else None
+
+
+def is_deprecated(name: str) -> bool:
+    return normalize_tag_name(name) in DEPRECATED_TAGS
+
+
 def parse_list_field(value: str | list | None) -> list[str]:
     if value is None:
         return []
@@ -158,14 +179,10 @@ def parse_list_field(value: str | list | None) -> list[str]:
 
 
 def dump_list_field(items: list[str] | None) -> str:
-    import json
-
     return json.dumps(parse_list_field(items), ensure_ascii=False)
 
 
 def load_list_field(raw: str | None) -> list[str]:
-    import json
-
     if not raw:
         return []
     try:
@@ -183,6 +200,10 @@ def valid_license(value: str | None) -> str:
 
 def valid_bucket(value: str | None) -> str | None:
     return value if value in BUCKET_IDS else None
+
+
+def valid_scope(value: str | None) -> str | None:
+    return value if value in SCOPE_IDS else None
 
 
 def valid_link_kind(value: str | None) -> str | None:
