@@ -17,6 +17,9 @@ from . import taxonomy as tax
 
 DEFAULT_BASE_URL = "https://api.openai.com/v1"
 DEFAULT_MODEL = "gpt-4o-mini"
+# Some reverse proxies sit behind a WAF that rejects the default Python UA
+# (Cloudflare answers 1010), so the UA is configurable and no longer left implicit.
+DEFAULT_USER_AGENT = "tavern-lib/1.0"
 
 MAX_BODY_CHARS = 3000
 MAX_GREETING_CHARS = 800
@@ -37,6 +40,7 @@ def config() -> dict[str, Any]:
         "model": os.environ.get("TAVERN_LLM_MODEL") or DEFAULT_MODEL,
         "timeout": float(os.environ.get("TAVERN_LLM_TIMEOUT") or "60"),
         "json_mode": (os.environ.get("TAVERN_LLM_JSON_MODE") or "1") not in {"0", "false", "off"},
+        "user_agent": (os.environ.get("TAVERN_LLM_USER_AGENT") or DEFAULT_USER_AGENT).strip() or DEFAULT_USER_AGENT,
     }
 
 
@@ -101,8 +105,8 @@ def _card_context(item: dict[str, Any], pieces: list[dict[str, Any]]) -> str:
 
 def build_messages(item: dict[str, Any], pieces: list[dict[str, Any]]) -> list[dict[str, str]]:
     system = (
-        "你在给一个角色卡资料库打标签。规则：\n"
-        "1. 只能从提供的词表里选标签，不得创造词表外的名字。\n"
+        "你��给一个角色卡资料库打标签。规则：\n"
+        "1. 只能从提供的词表里选标签，不得创造���表外的名字。\n"
         "2. 每个标签必须有原文依据，evidence 里放不超过 30 字的原文片段。\n"
         "3. 没有依据的轴直接省略，不要凑数；同一轴最多 6 个。\n"
         "4. 保留角色的具体设定，不要只写泛化的类型名。\n"
@@ -144,6 +148,7 @@ def _call(messages: list[dict[str, str]], cfg: dict[str, Any] | None = None) -> 
         method="POST",
         headers={
             "Content-Type": "application/json",
+            "User-Agent": cfg["user_agent"],
             **({"Authorization": f"Bearer {cfg['api_key']}"} if cfg["api_key"] else {}),
         },
     )
@@ -204,7 +209,7 @@ def suggest(
 ) -> dict[str, Any]:
     """Ask the model for tags. Returns normalized suggestions, never writes."""
     if not pieces:
-        raise TaggingError("这张卡还没有片段，先跑一次回填再打标")
+        raise TaggingError("这张卡还没有片段，先跑一次回��再打标")
     if not is_configured():
         raise TaggingError("未配置模型接口：设置 TAVERN_LLM_BASE_URL / TAVERN_LLM_API_KEY / TAVERN_LLM_MODEL")
     messages = build_messages(item, pieces)
