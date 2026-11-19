@@ -144,6 +144,17 @@ def _tag_sub(name: str) -> str:
     return str(record.get("sub") or "") if record else ""
 
 
+def order_tag_choices(choices: list[dict[str, Any]], selected_ids: set[int]) -> list[dict[str, Any]]:
+    """已选标签排在前面，未选保持原有顺序。
+
+    tag_bucket_view 和 apply_tag_select 必须用同一个顺序来计算前 24 个可见选项，
+    否则整桶替换时会把“已选但没显示出来”的标签悄悄删掉。
+    """
+    selected = [t for t in choices if int(t["id"]) in selected_ids]
+    rest = [t for t in choices if int(t["id"]) not in selected_ids]
+    return selected + rest
+
+
 def tag_sub_view(item_id: int, bucket: str, choices: list[dict[str, Any]], selected_ids: set[int]) -> discord.ui.View:
     """轴内标签多于一个下拉能放下的数量时，先按子类分流。"""
     view = discord.ui.View(timeout=None)
@@ -176,8 +187,7 @@ def tag_bucket_view(
 ) -> discord.ui.View:
     view = discord.ui.View(timeout=None)
     options: list[discord.SelectOption] = [discord.SelectOption(label="（不选 / 清空这类）", value="__clear__")]
-    ordered = sorted(choices, key=lambda tag: (int(tag["id"]) not in selected_ids, tag["name"]))
-    for tag in ordered[:24]:
+    for tag in order_tag_choices(choices, selected_ids)[:24]:
         flag = ""
         if tag.get("pending"):
             flag = "（待确认）"
@@ -405,10 +415,18 @@ def apply_tag_select(store: LibraryStore, item: dict[str, Any], bucket: str, val
     if "__clear__" in values:
         store.set_item_tags(item_id, [], replace_buckets=[bucket], source="user")
         return store.get_enriched(item_id)
-    names: list[dict[str, str]] = []
-    id_map = {str(t["id"]): t for t in store.list_tags(bucket, include_blacklisted=False)}
     current = {str(t["id"]): t for t in (item.get("tags") or []) if t.get("bucket") == bucket}
+    selected_ids = {int(key) for key in current}
+    choices = store.list_tags(bucket, include_blacklisted=False)
+    id_map = {str(t["id"]): t for t in choices}
     id_map.update(current)
+    # 与 tag_bucket_view 相同的可见窗口：已选优先后的前 24 个。
+    visible_ids = {str(t["id"]) for t in order_tag_choices(choices, selected_ids)[:24]}
+    names: list[dict[str, str]] = []
+    # 没显示在这次下拉里的已选标签原样保留；本次提交只改变可见的那部分。
+    for key, tag in current.items():
+        if key not in visible_ids:
+            names.append({"bucket": bucket, "name": tag["name"], "source": "user"})
     for raw in values:
         tag = id_map.get(raw)
         if tag:
@@ -456,22 +474,28 @@ def apply_modal(store: LibraryStore, item: dict[str, Any], kind: str, values: di
         return store.get_enriched(item_id)
     if kind == "basic":
         assignments = [{"bucket": "character", "name": t["name"], "source": "user"} for t in (item.get("tags") or []) if t.get("bucket") == "character"]
-        # Replace previous 年龄/性别/称呼 entries if new values are provided.
-        def upsert(prefix: str, raw: str) -> None:
-            raw = (raw or "").strip()
-            assignments[:] = [a for a in assignments if not a["name"].startswith(prefix) and a["name"] not in {raw}]
-            if raw:
-                name = raw if prefix == "" else f"{prefix}{raw}"
-                assignments.append({"bucket": "character", "name": normalize_tag_name(name), "source": "user"})
+        # 每个字段只替换自己那一类标签，绝不动同桶的其它标签。
+        # 性别比较特殊：允许裸值 男/女/非二元/成年，其它写法统一加 性别: 前缀。
+        bare_gender = {"男", "女", "非二元", "成年"}
 
-        if values.get("age"):
-            upsert("年龄:", values["age"])
-        if values.get("gender"):
-            # Keep bare 男/女/非二元 if that's what they typed; otherwise 性别:…
+        def drop_matching(pred: Callable[[str], bool]) -> None:
+            assignments[:] = [a for a in assignments if not pred(a["name"])]
+
+        def add_name(name: str) -> None:
+            cleaned = normalize_tag_name(name)
+            if cleaned and all(a["name"] != cleaned for a in assignments):
+                assignments.append({"bucket": "character", "name": cleaned, "source": "user"})
+
+        if (values.get("age") or "").strip():
+            drop_matching(lambda n: n.startswith("年龄:"))
+            add_name(f"年龄:{values['age'].strip()}")
+        if (values.get("gender") or "").strip():
             g = values["gender"].strip()
-            upsert("", g if g in {"男", "女", "非二元", "成年"} else f"性别:{g}")
-        if values.get("address"):
-            upsert("称呼:", values["address"])
+            drop_matching(lambda n: n in bare_gender or n.startswith("性别:"))
+            add_name(g if g in bare_gender else f"性别:{g}")
+        if (values.get("address") or "").strip():
+            drop_matching(lambda n: n.startswith("称呼:"))
+            add_name(f"称呼:{values['address'].strip()}")
         store.set_item_tags(item_id, assignments, replace_buckets=["character"], source="user")
         return store.get_enriched(item_id)
     if kind == "licnote":
