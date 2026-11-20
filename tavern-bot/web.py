@@ -6,7 +6,9 @@ from __future__ import annotations
 import json
 import mimetypes
 import os
+import re
 import sys
+import urllib.request
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from urllib.parse import parse_qs, urlparse
@@ -185,6 +187,43 @@ class LibHandler(BaseHTTPRequestHandler):
         if path == f"{PREFIX}/api/taxonomy":
             self._send_json(200, {"ok": True, **STORE.taxonomy_payload()})
             return
+        if path == f"{PREFIX}/api/tag-config":
+            cfg = tagging.config()
+            stored = STORE.get_setting("tag_model").strip()
+            self._send_json(
+                200,
+                {
+                    "ok": True,
+                    "model": cfg["model"],
+                    "source": "library.db" if stored else "llm.env",
+                    "base_url": cfg["base_url"],
+                    "user_agent": cfg["user_agent"],
+                    "auto": tagging.auto_enabled(),
+                },
+            )
+            return
+        if path == f"{PREFIX}/api/tag-models":
+            cfg = tagging.config()
+            req = urllib.request.Request(
+                f"{cfg['base_url']}/models",
+                headers={
+                    "Authorization": f"Bearer {cfg['api_key']}",
+                    "User-Agent": cfg["user_agent"],
+                },
+            )
+            try:
+                with urllib.request.urlopen(req, timeout=20) as resp:
+                    data = json.loads(resp.read().decode("utf-8"))
+            except Exception as exc:
+                self._send_json(400, {"ok": False, "message": f"拉取模型列表失败：{exc}"})
+                return
+            ids = sorted(
+                {str(m.get("id") or "").strip() for m in data.get("data", []) if isinstance(m, dict) and m.get("id")}
+            )
+            if cfg["model"] not in ids:
+                ids.insert(0, cfg["model"])
+            self._send_json(200, {"ok": True, "models": ids, "current": cfg["model"]})
+            return
         if path == f"{PREFIX}/api/items":
             qs = parse_qs(parsed.query)
             typ = (qs.get("type") or [""])[0]
@@ -251,6 +290,27 @@ class LibHandler(BaseHTTPRequestHandler):
         path = normalize_path(self.path)
         prefix = f"{PREFIX}/api/items/"
         pieces_prefix = f"{PREFIX}/api/pieces/"
+        if path == f"{PREFIX}/api/tag-config":
+            body = self._read_json_body()
+            model = str(body.get("model") or "").strip()
+            if not model:
+                try:
+                    STORE.set_setting("tag_model", "")
+                except Exception:
+                    self._send_json(500, {"ok": False, "message": "恢复默认失败"})
+                    return
+                self._send_json(200, {"ok": True, "model": tagging.config()["model"], "source": "llm.env"})
+                return
+            if len(model) > 80 or not re.fullmatch(r"[A-Za-z0-9._:/-]+", model):
+                self._send_json(400, {"ok": False, "message": "模型名只允许字母、数字、点、横杠、下划线"})
+                return
+            try:
+                STORE.set_setting("tag_model", model)
+            except Exception:
+                self._send_json(500, {"ok": False, "message": "保存失败"})
+                return
+            self._send_json(200, {"ok": True, "model": tagging.config()["model"], "source": "library.db"})
+            return
         if path.startswith(pieces_prefix) and path.endswith("/tags"):
             pid = path[len(pieces_prefix) : -len("/tags")]
             if pid.isdigit():

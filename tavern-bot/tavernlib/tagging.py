@@ -11,6 +11,7 @@ import os
 import re
 import urllib.error
 import urllib.request
+from pathlib import Path
 from typing import Any
 
 from . import taxonomy as tax
@@ -33,8 +34,42 @@ class TaggingError(RuntimeError):
     """模型不可用、返回不可解析，或这张卡还没有可打标的内容。"""
 
 
+def _stored_setting(key: str) -> str:
+    """Read a key from library.db `settings` (read-only, no LibraryStore init).
+
+    The web UI persists runtime overrides there (e.g. tag_model). A missing
+    table, missing database or a locked file all degrade to "" — the
+    environment-based defaults then apply, so tagging never breaks.
+    """
+    import sqlite3
+
+    try:
+        # Read TAVERN_LIBRARY at call time (not import time) so tests and
+        # embedded usage can point the lookup at a private library root.
+        from .paths import LIBRARY_ROOT
+
+        root = Path(os.environ.get("TAVERN_LIBRARY") or str(LIBRARY_ROOT))
+        db = root / "library.db"
+        if not db.is_file():
+            return ""
+        conn = sqlite3.connect(f"file:{db}?mode=ro", uri=True, timeout=5)
+        try:
+            row = conn.execute("SELECT value FROM settings WHERE key = ?", (key,)).fetchone()
+            return str(row[0]) if row and row[0] is not None else ""
+        finally:
+            conn.close()
+    except Exception:
+        return ""
+
+
 def config() -> dict[str, Any]:
-    return {
+    """Effective tagging config: env defaults, overridden by library.db settings.
+
+    `tag_model` set from the web UI wins over TAVERN_LLM_MODEL, so both the web
+    tag button and the bot's auto-tagging pick up a model switch immediately,
+    without a service restart.
+    """
+    cfg = {
         "base_url": (os.environ.get("TAVERN_LLM_BASE_URL") or DEFAULT_BASE_URL).rstrip("/"),
         "api_key": os.environ.get("TAVERN_LLM_API_KEY") or "",
         "model": os.environ.get("TAVERN_LLM_MODEL") or DEFAULT_MODEL,
@@ -42,6 +77,10 @@ def config() -> dict[str, Any]:
         "json_mode": (os.environ.get("TAVERN_LLM_JSON_MODE") or "1") not in {"0", "false", "off"},
         "user_agent": (os.environ.get("TAVERN_LLM_USER_AGENT") or DEFAULT_USER_AGENT).strip() or DEFAULT_USER_AGENT,
     }
+    stored_model = _stored_setting("tag_model").strip()
+    if stored_model:
+        cfg["model"] = stored_model
+    return cfg
 
 
 def auto_enabled() -> bool:
@@ -105,7 +144,7 @@ def _card_context(item: dict[str, Any], pieces: list[dict[str, Any]]) -> str:
 
 def build_messages(item: dict[str, Any], pieces: list[dict[str, Any]]) -> list[dict[str, str]]:
     system = (
-        "你��给一个角色卡资料库打标签。规则：\n"
+        "你���给一个角色卡资料库打标签。规则：\n"
         "1. 只能从提供的词表里选标签，不得创造���表外的名字。\n"
         "2. 每个标签必须有原文依据，evidence 里放不超过 30 字的原文片段。\n"
         "3. 没有依据的轴直接省略，不要凑数；同一轴最多 6 个。\n"

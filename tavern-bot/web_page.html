@@ -150,6 +150,7 @@
         <select class="filter" id="theme"><option value="">全部主题</option></select>
         <select class="filter" id="bucket"><option value="">全部标签类别</option></select>
         <input class="search" id="tag" type="search" placeholder="按标签名筛选" style="margin:0" autocomplete="off">
+        <button type="button" class="filter" id="tag-cfg-btn">打标设置</button>
       </div>
     </header>
     <div id="list"></div>
@@ -498,7 +499,7 @@
       panel.innerHTML = `
         <button type="button" class="close-x" id="close" aria-label="关闭">×</button>
         <h2>编辑「${escapeHtml(it.title || "未命名")}」</h2>
-        <p class="hint">改完会写入资源库。若改了类型，Discord 子区会由机器人稍后挪到对应频道。日常点选仍建议在 Discord 里做。</p>
+        <p class="hint">改完会写入资源库。若改了类型，Discord 子区会由机器人稍后挪到对应频道。日常点选仍��议在 Discord 里做。</p>
         <div class="edit-grid">
           ${field("类型", `<select class="filter" id="e-type">${typeOpts}</select>`)}
           ${field("标题", `<input class="field" id="e-title" value="${escapeAttr(it.title || "")}">`)}
@@ -709,6 +710,97 @@
     }
     backdrop.addEventListener("click", (e) => { if (e.target === backdrop) closeDetail(); });
     document.addEventListener("keydown", (e) => { if (e.key === "Escape") closeDetail(); });
+
+    document.getElementById("tag-cfg-btn").addEventListener("click", openTagConfig);
+
+    async function openTagConfig() {
+      backdrop.hidden = false;
+      backdrop.classList.add("show");
+      panel.innerHTML = "<p class='hint'>正在加载…</p>";
+      let cfg;
+      try {
+        const res = await fetch("/_lib/api/tag-config", { credentials: "same-origin" });
+        const data = await res.json();
+        if (!res.ok || !data.ok) throw new Error(data.message || "读取失败");
+        cfg = data;
+      } catch (err) {
+        panel.innerHTML = `<p class="msg show err">${escapeHtml(err.message)}</p>` +
+          `<div class="btns"><button type="button" class="action ghost" id="close">关闭</button></div>`;
+        document.getElementById("close").addEventListener("click", closeDetail);
+        return;
+      }
+      const sourceText = cfg.source === "library.db" ? "网页设置" : "llm.env 默认";
+      panel.innerHTML = `
+        <h2>打标模型设置</h2>
+        <p class="hint">接口：${escapeHtml(cfg.base_url)} · 当前来源：${sourceText}${cfg.auto ? " · 自动打标已开启" : ""}</p>
+        <div class="btns"><button type="button" class="action" id="btn-models">拉取模型列表</button></div>
+        <div id="model-picker" hidden>
+          <select class="filter" id="model-select" style="width:100%"></select>
+          <input class="field" id="model-custom" placeholder="或手动填模型名" style="margin-top:6px">
+        </div>
+        <p class="hint" id="model-current">当前生效：${escapeHtml(cfg.model)}</p>
+        <div class="btns">
+          <button type="button" class="action" id="save-model">保存</button>
+          <button type="button" class="action ghost" id="reset-model">恢复 llm.env 默认</button>
+          <button type="button" class="action ghost" id="close">关闭</button>
+        </div>
+        <p class="msg" id="tag-msg"></p>`;
+      const msg = document.getElementById("tag-msg");
+      document.getElementById("close").addEventListener("click", closeDetail);
+      document.getElementById("btn-models").addEventListener("click", async () => {
+        showMsg(msg, "正在拉取…", "");
+        try {
+          const res = await fetch("/_lib/api/tag-models", { credentials: "same-origin" });
+          const data = await res.json();
+          if (!res.ok || !data.ok) throw new Error(data.message || "拉取失败");
+          const sel = document.getElementById("model-select");
+          sel.innerHTML = data.models
+            .map((m) => `<option value="${escapeAttr(m)}"${m === cfg.model ? " selected" : ""}>${escapeHtml(m)}</option>`)
+            .join("");
+          document.getElementById("model-picker").hidden = false;
+          showMsg(msg, `共 ${data.models.length} 个模型，当前值已置顶`, "ok");
+        } catch (err) {
+          showMsg(msg, err.message, "err");
+        }
+      });
+      document.getElementById("save-model").addEventListener("click", async () => {
+        const custom = document.getElementById("model-custom").value.trim();
+        const picked = custom || document.getElementById("model-select").value || cfg.model;
+        try {
+          const res = await fetch("/_lib/api/tag-config", {
+            credentials: "same-origin",
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({ model: picked }),
+          });
+          const data = await res.json();
+          if (!res.ok || !data.ok) throw new Error(data.message || "保存失败");
+          cfg.model = data.model;
+          document.getElementById("model-current").textContent = "当前生效：" + data.model;
+          showMsg(msg, `已切换为 ${data.model}（${data.source === "library.db" ? "网页设置" : "默认"}），无需重启即时生效`, "ok");
+        } catch (err) {
+          showMsg(msg, err.message, "err");
+        }
+      });
+      document.getElementById("reset-model").addEventListener("click", async () => {
+        try {
+          const res = await fetch("/_lib/api/tag-config", {
+            credentials: "same-origin",
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({ model: "" }),
+          });
+          const data = await res.json();
+          if (!res.ok || !data.ok) throw new Error(data.message || "恢复失败");
+          cfg.model = data.model;
+          document.getElementById("model-current").textContent = "当前生效：" + data.model;
+          showMsg(msg, `已恢复 llm.env 默认：${data.model}`, "ok");
+        } catch (err) {
+          showMsg(msg, err.message, "err");
+        }
+      });
+    }
+
     loadTaxonomy().then(load);
   </script>
 </body>
