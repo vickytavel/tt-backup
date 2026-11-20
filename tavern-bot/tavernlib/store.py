@@ -1052,6 +1052,51 @@ class LibraryStore:
                 )
             ]
 
+    def delete_item(self, item_id: int) -> dict[str, Any] | None:
+        """Remove an item and every related row from the library.
+
+        The stored file is moved into <root>/.trash/<stamp>-<id>/ instead of
+        being unlinked, so an accidental delete stays recoverable. Returns a
+        summary dict, or None when the id is unknown.
+        """
+        item = self.get(item_id)
+        if not item:
+            return None
+        moved_to = ""
+        stored_path = str(item.get("stored_path") or "")
+        if stored_path:
+            try:
+                src = self.abspath(stored_path)
+                if src.is_file():
+                    stamp = datetime.now(timezone.utc).strftime("%Y%m%d-%H%M%S")
+                    dest_dir = self.root / ".trash" / f"{stamp}-{item_id}"
+                    dest_dir.mkdir(parents=True, exist_ok=True)
+                    dest = dest_dir / src.name
+                    shutil.move(str(src), str(dest))
+                    try:
+                        os.chmod(dest, 0o664)
+                    except OSError:
+                        pass
+                    moved_to = str(dest.relative_to(self.root))
+            except (ValueError, OSError):
+                LOG.warning("delete_item: could not move stored file for item %s", item_id, exc_info=True)
+        with self._connect() as conn:
+            piece_ids = [int(r["id"]) for r in conn.execute("SELECT id FROM pieces WHERE item_id = ?", (item_id,))]
+            for pid in piece_ids:
+                conn.execute("DELETE FROM piece_tags WHERE piece_id = ?", (pid,))
+            conn.execute("DELETE FROM pieces WHERE item_id = ?", (item_id,))
+            conn.execute("DELETE FROM fragments WHERE item_id = ?", (item_id,))
+            conn.execute("DELETE FROM item_tags WHERE item_id = ?", (item_id,))
+            conn.execute("DELETE FROM item_themes WHERE item_id = ?", (item_id,))
+            conn.execute("DELETE FROM item_links WHERE from_id = ? OR to_id = ?", (item_id, item_id))
+            conn.execute("DELETE FROM items WHERE id = ?", (item_id,))
+        return {
+            "id": item_id,
+            "title": item.get("title") or "",
+            "stored_path": stored_path,
+            "moved_to": moved_to,
+        }
+
     # --- tags / themes / links / fragments ---------------------------------
 
     def get_setting(self, key: str, default: str = "") -> str:

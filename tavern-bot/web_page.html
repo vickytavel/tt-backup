@@ -113,6 +113,7 @@
       text-decoration: none; cursor: pointer; color: var(--btn-text); background: var(--btn);
     }
     button.action.again { background: var(--btn-neutral); color: var(--text); border: 1px solid var(--line); }
+    button.action.danger { background: var(--btn-off); }
     button.action.ghost, a.action.ghost {
       background: var(--btn-neutral); color: var(--text); border: 1px solid var(--line);
     }
@@ -469,7 +470,8 @@
           ${importBtn}
           ${setBtn}
           <button type="button" class="action again" id="btn-edit">编辑元数据</button>
-          ${download}
+           ${download}
+           <button type="button" class="action danger" id="btn-delete">删除这条</button>
           <button type="button" class="action ghost" id="close2">关闭</button>
         </div>`;
       document.getElementById("close").onclick = closeDetail;
@@ -479,6 +481,8 @@
       const sbtn = document.getElementById("btn-import-set");
       if (sbtn) sbtn.addEventListener("click", () => doImportSet(it, imported));
       document.getElementById("btn-edit").onclick = () => renderEditor(it);
+      const delBtn = document.getElementById("btn-delete");
+      if (delBtn) delBtn.addEventListener("click", () => doDelete(it, delBtn));
       panel.querySelectorAll(".link-jump").forEach((a) => {
         a.addEventListener("click", (e) => {
           e.preventDefault();
@@ -692,6 +696,31 @@
         const r = await fetch("/_lib/api/items/" + it.id, { credentials: "same-origin" });
         const d = await r.json();
         if (d.item) renderDetail(d.item);
+      } catch (err) {
+        showMsg(msg, err.message, "err");
+        if (btn) btn.disabled = false;
+      }
+    }
+
+    async function doDelete(it, btn) {
+      const msg = document.getElementById("detail-msg");
+      const ok = window.confirm(`确定删除「${it.title || "未命名"}」（编号 ${it.id}）？
+文件会移入库内回收站 .trash/，误删可以从那里找回。`);
+      if (!ok) return;
+      if (btn) btn.disabled = true;
+      showMsg(msg, "正在删除…", "warn");
+      try {
+        const res = await fetch("/_lib/api/items/" + it.id + "/delete", {
+          method: "POST",
+          credentials: "same-origin",
+          headers: { "Accept": "application/json" },
+        });
+        const data = await res.json().catch(() => ({}));
+        if (!res.ok || data.ok === false) {
+          throw new Error(data.message || "删除失败，请稍后重试。");
+        }
+        closeDetail();
+        await load();
       } catch (err) {
         showMsg(msg, err.message, "err");
         if (btn) btn.disabled = false;

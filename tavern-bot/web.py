@@ -395,6 +395,22 @@ class LibHandler(BaseHTTPRequestHandler):
                 except Exception:
                     self._send_json(500, {"ok": False, "message": "应用失败，请稍后重试。"})
                 return
+        if path.startswith(prefix) and path.endswith("/delete"):
+            mid = path[len(prefix) : -len("/delete")]
+            if mid.isdigit():
+                try:
+                    result = STORE.delete_item(int(mid))
+                except Exception:
+                    self._send_json(500, {"ok": False, "message": "删除失败，请稍后重试。"})
+                    return
+                if not result:
+                    self._send_json(404, {"ok": False, "message": "找不到这条资源"})
+                    return
+                message = "已删除；文件已移入回收站 .trash/。"
+                if not result.get("moved_to"):
+                    message = "已删除（这条没有库内文件可移动）。"
+                self._send_json(200, {"ok": True, "deleted": result, "message": message})
+                return
         if path.startswith(prefix):
             mid = path[len(prefix) :]
             if mid.isdigit():
