@@ -205,6 +205,10 @@ CREATE TABLE IF NOT EXISTS intros (
     jump_url TEXT,
     created_at TEXT NOT NULL
 );
+CREATE TABLE IF NOT EXISTS settings (
+    key TEXT PRIMARY KEY,
+    value TEXT NOT NULL
+);
 """
 
 _WRITE_LOCK = threading.Lock()
@@ -1049,6 +1053,20 @@ class LibraryStore:
             ]
 
     # --- tags / themes / links / fragments ---------------------------------
+
+    def get_setting(self, key: str, default: str = "") -> str:
+        """Read a library-level key/value setting (empty string if unset)."""
+        with self._connect() as conn:
+            row = conn.execute("SELECT value FROM settings WHERE key = ?", (key,)).fetchone()
+            return (row["value"] or "") if row else default
+
+    def set_setting(self, key: str, value: str) -> None:
+        with self._connect() as conn:
+            conn.execute(
+                "INSERT INTO settings(key, value) VALUES(?, ?) "
+                "ON CONFLICT(key) DO UPDATE SET value = excluded.value",
+                (key, value),
+            )
 
     def list_tags(self, bucket: str | None = None, *, include_blacklisted: bool = False) -> list[dict[str, Any]]:
         sql = "SELECT * FROM tags"
